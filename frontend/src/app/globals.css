@@ -99,6 +99,13 @@ input[type="checkbox"] {
   box-shadow: 0 12px 32px rgba(18, 35, 58, 0.06);
 }
 
+button.panel {
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
 .picked,
 .sheet-table tr.hit td {
   background: var(--pick);

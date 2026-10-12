@@ -4,6 +4,7 @@ import { useMemo, useState, type ReactNode } from "react";
 import { CashflowChart, CreditMixChart, SpendMonthChart, SpendShareChart } from "@/components/analyze/charts";
 import { Depth, OpenProvider, TrailBar, focusIds, openLabel, openMatch, useOpen } from "@/components/analyze/depth";
 import { Figure } from "@/components/analyze/figure";
+import { buildCaseFile } from "@/lib/case-file";
 import { PrivacyNote } from "@/components/analyze/privacy-note";
 import { SpendSummary } from "@/components/analyze/spend-summary";
 import { downloadText } from "@/components/analyze/upload-panel";
@@ -48,7 +49,8 @@ export function Report({
     outflows: <Debits analysis={analysis} />,
     counterparties: <Payers analysis={analysis} />,
     flags: <Reasons analysis={analysis} />,
-    policy: <PolicyPanel policy={policy} analysis={analysis} onPolicy={onPolicy} />,
+    policy: <PolicyPanel policy={policy} onPolicy={onPolicy} />,
+    readiness: <Readiness analysis={analysis} />,
     integrity: <Checks analysis={analysis} />,
     monthly: <Months analysis={analysis} />,
     ledger: <Rows analysis={analysis} />,
@@ -72,15 +74,16 @@ export function Report({
           <button
             type="button"
             className="underline underline-offset-4"
-            onClick={() =>
-              downloadText(
-                JSON.stringify(caseExport(analysis, policy, caseRef, fileName), null, 2),
-                `${(caseRef || "case").toLowerCase()}-analysis.json`,
-                "application/json",
-              )
-            }
+            onClick={() => {
+              const file = buildCaseFile(analysis, policy, caseRef, fileName);
+              const name = (caseRef || "case").toLowerCase();
+              downloadText(JSON.stringify(file, null, 2), `${name}-credit-file.json`, "application/json");
+              window.setTimeout(() => {
+                downloadText(file.statement, fileName || `${name}-statement.csv`, "text/csv");
+              }, 400);
+            }}
           >
-            Download JSON
+            Download the file
           </button>
           <button type="button" className="underline underline-offset-4" onClick={onReset}>
             New statement
@@ -93,17 +96,15 @@ export function Report({
       </p>
       <PrivacyNote />
 
-      {arrange ? (
-        <Arrange widgets={widgets} onWidgets={onWidgets} />
-      ) : null}
+      {arrange ? <Arrange widgets={widgets} onWidgets={onWidgets} /> : null}
 
       <Depth analysis={analysis} />
 
-      <div className="mt-8 grid items-start gap-x-10 gap-y-12 lg:grid-cols-12">
+      <div className="mt-8 grid items-stretch gap-6 lg:grid-cols-12">
         {widgets
           .filter((widget) => widget.visible)
           .map((widget) => (
-            <section key={widget.id} className={`panel p-5 ${WIDGET_META[widget.id].span}`}>
+            <section key={widget.id} className={`panel h-full p-5 ${WIDGET_META[widget.id].span}`}>
               {blocks[widget.id]}
             </section>
           ))}
@@ -640,11 +641,9 @@ function Reasons({ analysis }: { analysis: Analysis }) {
 
 function PolicyPanel({
   policy,
-  analysis,
   onPolicy,
 }: {
   policy: Policy;
-  analysis: Analysis;
   onPolicy: (policy: Policy) => void;
 }) {
   const activePreset = POLICY_PRESETS.find((preset) => samePolicy(preset.policy, policy));
@@ -688,17 +687,22 @@ function PolicyPanel({
           </li>
         ))}
       </ul>
-      <h3 className="mb-2 mt-6 font-serif text-xl">What moved the readiness</h3>
-      <ul className="text-sm">
+    </div>
+  );
+}
+
+function Readiness({ analysis }: { analysis: Analysis }) {
+  return (
+    <div>
+      <SectionTitle title="What moved the readiness" />
+      <ul className="grid gap-x-10 md:grid-cols-2">
         {analysis.grade.rules.map((rule) => (
-          <li key={rule.id} className="grid grid-cols-[1fr_auto] gap-3 border-b border-rule py-1.5">
+          <li key={rule.id} className="grid grid-cols-[1fr_auto] gap-3 border-b border-rule py-2 text-sm">
             <span>
               {rule.label}
               <span className="block text-muted">{rule.note}</span>
             </span>
-            <span className={`num ${rule.hit ? "text-rust" : "text-muted"}`}>
-              {rule.hit ? rule.delta : "0"}
-            </span>
+            <span className={`num ${rule.hit ? "text-rust" : "text-muted"}`}>{rule.hit ? rule.delta : "0"}</span>
           </li>
         ))}
       </ul>
@@ -934,28 +938,4 @@ const FIELDS: {
 
 function samePolicy(a: Policy, b: Policy) {
   return (Object.keys(a) as (keyof Policy)[]).every((key) => a[key] === b[key]);
-}
-
-function caseExport(analysis: Analysis, policy: Policy, caseRef: string, fileName: string) {
-  return {
-    caseRef,
-    fileName,
-    period: analysis.periodLabel,
-    reading: analysis.flows.reading,
-    terms: policy,
-    facilities: analysis.flows.facilities,
-    recurring: analysis.flows.series,
-    groups: {
-      spend: analysis.groups.spend,
-      income: analysis.groups.income,
-    },
-    grade: analysis.grade,
-    capacity: analysis.capacity,
-    metrics: analysis.metrics,
-    reasons: analysis.reasons,
-    integrity: analysis.integrity,
-    months: analysis.months,
-    counterparties: analysis.counterparties,
-    transactions: analysis.txns,
-  };
 }

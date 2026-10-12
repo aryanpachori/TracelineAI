@@ -212,7 +212,7 @@ export function Depth({ analysis }: { analysis: Analysis }) {
   if (txn) {
     const detail = explainTxn(analysis, txn);
     return (
-      <section id="reading" className="panel mt-6">
+      <section id="reading" className="panel mt-6 overflow-hidden p-5">
         <div className="flex flex-wrap items-baseline justify-between gap-3">
           <p className="text-sm text-muted">Transaction</p>
           <div className="flex gap-4 text-sm">
@@ -268,7 +268,7 @@ export function Depth({ analysis }: { analysis: Analysis }) {
   const rows = analysis.txns.filter((txn) => view.txnIds.includes(txn.id)).slice(0, 8);
 
   return (
-    <section id="reading" className="panel mt-6">
+    <section id="reading" className="panel mt-6 overflow-hidden p-5">
       <div className="flex items-baseline justify-between gap-4">
         <p className="text-sm text-muted">AI reading</p>
         <button type="button" className="text-sm underline underline-offset-4" onClick={() => setOpen(null)}>

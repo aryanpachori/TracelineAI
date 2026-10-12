@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { DownloadSample } from "@/components/download-sample";
 import { SiteHeader } from "@/components/site-header";
 import { inrCompact, pct } from "@/lib/format";
 import type { Preview } from "@/lib/types";
@@ -10,14 +11,13 @@ export function HomePage({ preview }: { preview: Preview }) {
       <main className="mx-auto max-w-[1080px] px-5">
         <section className="grid items-end gap-10 py-14 lg:grid-cols-12 lg:py-20">
           <div className="lg:col-span-7">
-            <h1 className="max-w-[16ch] font-serif text-[2.7rem] font-normal leading-[1.08] tracking-[-0.02em] sm:text-6xl">
-              Every rupee in the account, grouped.
+            <h1 className="max-w-[18ch] font-serif text-[2.7rem] font-normal leading-[1.08] tracking-[-0.02em] sm:text-6xl">
+              AI credit analyzer for NBFCs.
             </h1>
             <p className="mt-6 max-w-[42rem] text-[1.125rem] leading-7 text-ink">
-              Traceline reads the whole statement. AI splits every credit and debit into groups,
-              charts where the money comes from and what it is spent on, and opens each group to
-              the merchants and the rows. A lender sees capacity and a facility. The account
-              holder sees the same picture of the finances.
+              Traceline reads a bank statement for NBFCs lending to thin-file businesses. AI
+              groups every credit and debit, charts cash flow and spending, and sizes the
+              facility the account can carry, down to the merchant and the row.
             </p>
             <div className="mt-8 flex flex-wrap gap-3">
               <Link href="/analyze" className="on-ink px-4 py-2.5">
@@ -26,6 +26,7 @@ export function HomePage({ preview }: { preview: Preview }) {
               <Link href="/analyze?sample=1" className="rounded-xl border border-rule bg-white px-4 py-2.5">
                 Open the sample file
               </Link>
+              <DownloadSample />
             </div>
           </div>
 

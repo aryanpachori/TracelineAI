@@ -263,6 +263,7 @@ export type WidgetId =
   | "counterparties"
   | "flags"
   | "policy"
+  | "readiness"
   | "integrity"
   | "monthly"
   | "ledger";

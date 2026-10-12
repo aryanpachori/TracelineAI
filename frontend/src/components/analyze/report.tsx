@@ -2,7 +2,7 @@
 
 import { useMemo, useState, type ReactNode } from "react";
 import { CashflowChart, CreditMixChart, SpendMonthChart, SpendShareChart } from "@/components/analyze/charts";
-import { Depth, OpenProvider, TrailBar, focusIds, openLabel, openMatch, useOpen } from "@/components/analyze/depth";
+import { OpenProvider, TrailBar, focusIds, openLabel, openMatch, useOpen } from "@/components/analyze/depth";
 import { Figure } from "@/components/analyze/figure";
 import { buildCaseFile } from "@/lib/case-file";
 import { PrivacyNote } from "@/components/analyze/privacy-note";
@@ -97,8 +97,6 @@ export function Report({
       <PrivacyNote />
 
       {arrange ? <Arrange widgets={widgets} onWidgets={onWidgets} /> : null}
-
-      <Depth analysis={analysis} />
 
       <div className="mt-8 grid items-stretch gap-6 lg:grid-cols-12">
         {widgets

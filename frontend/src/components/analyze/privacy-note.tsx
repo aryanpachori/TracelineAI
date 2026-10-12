@@ -30,9 +30,9 @@ export function PrivacyNote() {
 
   return (
     <div className="mt-6 rounded-2xl border border-rule bg-white px-4 py-4">
-      <p className="font-medium">The statement is not saved with us.</p>
+      <p className="font-medium">The statement is not stored.</p>
       <p className="mt-1 max-w-[40rem] text-sm text-muted">
-        It is read in this browser and stays in the tab. Closing the tab or choosing New statement clears it. Traceline does not receive the file.
+        An uploaded statement is sent to the local reader so it can be read. It is not written to disk, and the rows are not kept after the response. The sample file stays in this browser.
       </p>
       <button type="button" className="mt-3 text-sm font-semibold text-pine underline underline-offset-4" onClick={showProof}>
         {open ? "Refresh the check" : "Show what this browser saved"}
@@ -43,7 +43,7 @@ export function PrivacyNote() {
             <li key={line}>{line}</li>
           ))}
           <li className="text-muted">
-            Outside proof: open the browser Network tab, then load a statement. The file should not appear in any request.
+            Outside proof: the request goes to the local reader and the file is not written beside the app.
           </li>
         </ul>
       ) : null}

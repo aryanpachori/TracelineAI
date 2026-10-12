@@ -1,0 +1,23 @@
+                 precision    recall  f1-score   support
+
+  bounce_charge       1.00      1.00      1.00         1
+bounce_reversal       1.00      1.00      1.00         2
+    business_in       1.00      1.00      1.00        80
+        cash_in       1.00      1.00      1.00         6
+       cash_out       1.00      1.00      1.00         2
+            emi       0.99      1.00      0.99        80
+        loan_in       1.00      1.00      1.00         2
+       personal       1.00      0.96      0.98        80
+           rent       1.00      1.00      1.00         5
+         salary       1.00      1.00      1.00        80
+        self_in       1.00      1.00      1.00         2
+       self_out       1.00      1.00      1.00         2
+       supplier       1.00      1.00      1.00        20
+            tax       1.00      1.00      1.00         7
+    transfer_in       0.67      1.00      0.80         2
+   transfer_out       0.50      1.00      0.67         1
+      utilities       1.00      1.00      1.00         2
+
+       accuracy                           0.99       374
+      macro avg       0.95      1.00      0.97       374
+   weighted avg       0.99      0.99      0.99       374

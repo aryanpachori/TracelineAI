@@ -36,6 +36,7 @@ export function buildFlows(
   },
   grade: { letter: "A" | "B" | "C" | "D" | "E"; label: string; points: number },
   policy: Policy,
+  businessRates?: [number, number],
 ): FlowReport {
   const series = detectSeries(txns, months.map((month) => month.key));
   const rails = detectRails(txns);
@@ -57,6 +58,7 @@ export function buildFlows(
     upiShare,
     upiIn,
     monthCount: Math.max(metrics.months, 1),
+    businessRates,
   });
   const reading = writeReading(series, upiShare, extraCommit, facilities, grade);
 
@@ -218,10 +220,13 @@ function buildFacilities(input: {
   upiShare: number;
   upiIn: number;
   monthCount: number;
+  businessRates?: [number, number];
 }): Facility[] {
   const room = Math.max(0, input.metrics.medianCashAfterOps - input.extraCommit);
   const monthly = room * input.policy.surplusShare;
-  const rates = rateBand(input.grade.letter, input.metrics.bounces6m, input.policy.maxBounces6m, input.metrics.volatility);
+  const rates =
+    input.businessRates ??
+    rateBand(input.grade.letter, input.metrics.bounces6m, input.policy.maxBounces6m, input.metrics.volatility);
   const fit = facilityFit(input.grade.letter, input.metrics.bounces6m > input.policy.maxBounces6m, monthly);
   const business = amountBand(monthly, rates, input.policy.tenureMonths);
   const lineRates: [number, number] = [Math.min(rates[0] + 0.02, 0.3), Math.min(rates[1] + 0.02, 0.34)];

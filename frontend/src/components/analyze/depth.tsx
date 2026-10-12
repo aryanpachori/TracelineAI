@@ -120,64 +120,54 @@ export function TrailBar({ analysis }: { analysis: Analysis }) {
   const reduce = useReducedMotion();
   const last = trail.at(-1);
   const txn = last?.kind === "txn" ? analysis.txns.find((item) => item.id === last.id) : undefined;
-  const detail = txn ? explainTxn(analysis, txn) : null;
 
   return (
     <AnimatePresence>
       {trail.length ? (
         <motion.div
-          className="fixed inset-x-0 bottom-0 z-30 px-4 pb-4"
-          initial={reduce ? false : { y: 24, opacity: 0 }}
-          animate={{ y: 0, opacity: 1 }}
-          exit={reduce ? undefined : { y: 24, opacity: 0 }}
+          className="fixed inset-0 z-30 flex items-center justify-center p-4"
+          initial={reduce ? false : { opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={reduce ? undefined : { opacity: 0 }}
         >
-          <div className="mx-auto flex max-w-[1080px] items-start gap-4 rounded-2xl border border-rule bg-white px-4 py-3 shadow-[0_16px_40px_rgba(18,35,58,0.16)]">
-            <div className="min-w-0 flex-1">
-              <nav className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-sm" aria-label="How you got here">
-                <button type="button" className="text-muted underline underline-offset-4" onClick={() => setOpen(null)}>
-                  This file
-                </button>
-                {trail.map((crumb, index) => {
-                  const label = crumb.kind === "scope" ? openLabel(analysis, crumb.open) : txn && crumb.id === txn.id ? prettyDate(txn.date) : "Transaction";
-                  const current = index === trail.length - 1;
-                  return (
-                    <span key={`${crumb.kind}-${index}`} className="inline-flex items-center gap-1.5">
-                      <span className="text-muted">/</span>
-                      <button
-                        type="button"
-                        className={current ? "font-semibold" : "text-muted underline underline-offset-4"}
-                        onClick={() => goTo(index)}
-                      >
-                        {label}
-                      </button>
-                    </span>
-                  );
-                })}
-              </nav>
-              {txn && detail ? (
-                <div className="mt-2 grid gap-3 border-t border-rule pt-2 sm:grid-cols-[auto_auto_1fr] sm:items-baseline">
-                  <p>
-                    <span className="block text-xs text-muted">When</span>
-                    <span className="font-medium">{prettyDate(txn.date)}</span>
-                  </p>
-                  <p>
-                    <span className="block text-xs text-muted">Amount</span>
-                    <span className={`num font-medium ${detail.direction === "out" ? "text-rust" : "text-pine"}`}>
-                      {detail.amount} {detail.direction === "out" ? "out" : "in"}
-                    </span>
-                  </p>
-                  <p className="min-w-0">
-                    <span className="block text-xs text-muted">What it was for</span>
-                    <span className="line-clamp-2">{detail.purpose}</span>
-                  </p>
-                </div>
-              ) : (
-                <p className="mt-1 text-sm text-muted">Open a name, then a line, to see when it happened and what it was for.</p>
-              )}
+          <button
+            type="button"
+            className="absolute inset-0 bg-[#12233a]/40"
+            aria-label="Close"
+            onClick={() => setOpen(null)}
+          />
+          <div className="relative flex max-h-[min(82vh,40rem)] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-rule bg-white shadow-[0_24px_60px_rgba(18,35,58,0.22)]">
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              <Depth analysis={analysis} />
             </div>
-            <button type="button" className="shrink-0 text-sm text-muted underline underline-offset-4" onClick={() => setOpen(null)}>
-              Close
-            </button>
+            <div className="flex items-start gap-4 border-t border-rule px-4 py-3">
+              <div className="min-w-0 flex-1">
+                <nav className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-sm" aria-label="How you got here">
+                  <button type="button" className="text-muted underline underline-offset-4" onClick={() => setOpen(null)}>
+                    This file
+                  </button>
+                  {trail.map((crumb, index) => {
+                    const label = crumb.kind === "scope" ? openLabel(analysis, crumb.open) : txn && crumb.id === txn.id ? prettyDate(txn.date) : "Transaction";
+                    const current = index === trail.length - 1;
+                    return (
+                      <span key={`${crumb.kind}-${index}`} className="inline-flex items-center gap-1.5">
+                        <span className="text-muted">/</span>
+                        <button
+                          type="button"
+                          className={current ? "font-semibold" : "text-muted underline underline-offset-4"}
+                          onClick={() => goTo(index)}
+                        >
+                          {label}
+                        </button>
+                      </span>
+                    );
+                  })}
+                </nav>
+              </div>
+              <button type="button" className="shrink-0 text-sm text-muted underline underline-offset-4" onClick={() => setOpen(null)}>
+                Close
+              </button>
+            </div>
           </div>
         </motion.div>
       ) : null}
@@ -187,7 +177,6 @@ export function TrailBar({ analysis }: { analysis: Analysis }) {
 
 export function Depth({ analysis }: { analysis: Analysis }) {
   const { open, setOpen, txnId, setTxn } = useOpen();
-  const reduce = useReducedMotion();
   const txn = analysis.txns.find((item) => item.id === txnId) ?? null;
 
   useEffect(() => {
@@ -201,18 +190,10 @@ export function Depth({ analysis }: { analysis: Analysis }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [setOpen, setTxn, txnId]);
 
-  useEffect(() => {
-    if (!open && !txnId) return;
-    document.getElementById("reading")?.scrollIntoView({
-      behavior: reduce ? "auto" : "smooth",
-      block: "start",
-    });
-  }, [open, txnId, reduce]);
-
   if (txn) {
     const detail = explainTxn(analysis, txn);
     return (
-      <section id="reading" className="panel mt-6 overflow-hidden p-5">
+      <section id="reading" className="px-5 py-5">
         <div className="flex flex-wrap items-baseline justify-between gap-3">
           <p className="text-sm text-muted">Transaction</p>
           <div className="flex gap-4 text-sm">
@@ -268,7 +249,7 @@ export function Depth({ analysis }: { analysis: Analysis }) {
   const rows = analysis.txns.filter((txn) => view.txnIds.includes(txn.id)).slice(0, 8);
 
   return (
-    <section id="reading" className="panel mt-6 overflow-hidden p-5">
+    <section id="reading" className="px-5 py-5">
       <div className="flex items-baseline justify-between gap-4">
         <p className="text-sm text-muted">AI reading</p>
         <button type="button" className="text-sm underline underline-offset-4" onClick={() => setOpen(null)}>

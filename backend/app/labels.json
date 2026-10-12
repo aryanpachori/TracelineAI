@@ -1,0 +1,736 @@
+{
+  "model": "openai/gpt-4o-mini",
+  "categories": [
+    "business_in",
+    "salary",
+    "transfer_in",
+    "loan_in",
+    "self_in",
+    "cash_in",
+    "emi",
+    "rent",
+    "supplier",
+    "utilities",
+    "tax",
+    "bounce_reversal",
+    "bounce_charge",
+    "cash_out",
+    "personal",
+    "self_out",
+    "transfer_out",
+    "other_in",
+    "other_out"
+  ],
+  "examples": [
+    {
+      "narration": "Flipkart order",
+      "category": "personal",
+      "kaggleLabel": "shopping",
+      "source": "financial-descriptions"
+    },
+    {
+      "narration": "Electronics shopping",
+      "category": "personal",
+      "kaggleLabel": "shopping",
+      "source": "financial-descriptions"
+    },
+    {
+      "narration": "Netflix subscription",
+      "category": "personal",
+      "kaggleLabel": "entertainment",
+      "source": "financial-descriptions"
+    },
+    {
+      "narration": "Credit card EMI",
+      "category": "emi",
+      "kaggleLabel": "emi",
+      "source": "financial-descriptions"
+    },
+    {
+      "narration": "Stock purchase",
+      "category": "personal",
+      "kaggleLabel": "investment",
+      "source": "financial-descriptions"
+    },
+    {
+      "narration": "Mutual fund SIP",
+      "category": "personal",
+      "kaggleLabel": "investment",
+      "source": "financial-descriptions"
+    },
+    {
+      "narration": "Mobile recharge",
+      "category": "utilities",
+      "kaggleLabel": "utilities",
+      "source": "financial-descriptions"
+    },
+    {
+      "narration": "Bike loan EMI",
+      "category": "emi",
+      "kaggleLabel": "emi",
+      "source": "financial-descriptions"
+    },
+    {
+      "narration": "Movie ticket booking",
+      "category": "personal",
+      "kaggleLabel": "entertainment",
+      "source": "financial-descriptions"
+    },
+    {
+      "narration": "Doctor consultation",
+      "category": "personal",
+      "kaggleLabel": "healthcare",
+      "source": "financial-descriptions"
+    },
+    {
+      "narration": "Cafe coffee",
+      "category": "personal",
+      "kaggleLabel": "food",
+      "source": "financial-descriptions"
+    },
+    {
+      "narration": "Medical test charges",
+      "category": "personal",
+      "kaggleLabel": "healthcare",
+      "source": "financial-descriptions"
+    },
+    {
+      "narration": "Exam fee",
+      "category": "personal",
+      "kaggleLabel": "education",
+      "source": "financial-descriptions"
+    },
+    {
+      "narration": "Uber ride",
+      "category": "personal",
+      "kaggleLabel": "travel",
+      "source": "financial-descriptions"
+    },
+    {
+      "narration": "Online course subscription",
+      "category": "personal",
+      "kaggleLabel": "education",
+      "source": "financial-descriptions"
+    },
+    {
+      "narration": "Ola cab",
+      "category": "personal",
+      "kaggleLabel": "travel",
+      "source": "financial-descriptions"
+    },
+    {
+      "narration": "Electricity bill payment",
+      "category": "utilities",
+      "kaggleLabel": "utilities",
+      "source": "financial-descriptions"
+    },
+    {
+      "narration": "Pizza delivery",
+      "category": "personal",
+      "kaggleLabel": "food",
+      "source": "financial-descriptions"
+    },
+    {
+      "narration": "Home loan EMI",
+      "category": "emi",
+      "kaggleLabel": "emi",
+      "source": "financial-descriptions"
+    },
+    {
+      "narration": "Hospital bill",
+      "category": "personal",
+      "kaggleLabel": "healthcare",
+      "source": "financial-descriptions"
+    },
+    {
+      "narration": "Crypto investment",
+      "category": "personal",
+      "kaggleLabel": "investment",
+      "source": "financial-descriptions"
+    },
+    {
+      "narration": "PPF contribution",
+      "category": "personal",
+      "kaggleLabel": "investment",
+      "source": "financial-descriptions"
+    },
+    {
+      "narration": "Amazon purchase",
+      "category": "personal",
+      "kaggleLabel": "shopping",
+      "source": "financial-descriptions"
+    },
+    {
+      "narration": "Hotel booking",
+      "category": "personal",
+      "kaggleLabel": "travel",
+      "source": "financial-descriptions"
+    },
+    {
+      "narration": "Water bill",
+      "category": "utilities",
+      "kaggleLabel": "utilities",
+      "source": "financial-descriptions"
+    },
+    {
+      "narration": "Pharmacy medicine purchase",
+      "category": "personal",
+      "kaggleLabel": "healthcare",
+      "source": "financial-descriptions"
+    },
+    {
+      "narration": "Lunch at hotel",
+      "category": "personal",
+      "kaggleLabel": "food",
+      "source": "financial-descriptions"
+    },
+    {
+      "narration": "Library fee",
+      "category": "personal",
+      "kaggleLabel": "education",
+      "source": "financial-descriptions"
+    },
+    {
+      "narration": "Car loan EMI",
+      "category": "emi",
+      "kaggleLabel": "emi",
+      "source": "financial-descriptions"
+    },
+    {
+      "narration": "Concert ticket",
+      "category": "personal",
+      "kaggleLabel": "entertainment",
+      "source": "financial-descriptions"
+    },
+    {
+      "narration": "College fees payment",
+      "category": "personal",
+      "kaggleLabel": "education",
+      "source": "financial-descriptions"
+    },
+    {
+      "narration": "Online shopping payment",
+      "category": "personal",
+      "kaggleLabel": "shopping",
+      "source": "financial-descriptions"
+    },
+    {
+      "narration": "Bus ticket",
+      "category": "personal",
+      "kaggleLabel": "travel",
+      "source": "financial-descriptions"
+    },
+    {
+      "narration": "Food court payment",
+      "category": "personal",
+      "kaggleLabel": "food",
+      "source": "financial-descriptions"
+    },
+    {
+      "narration": "Gas bill payment",
+      "category": "utilities",
+      "kaggleLabel": "utilities",
+      "source": "financial-descriptions"
+    },
+    {
+      "narration": "Game purchase",
+      "category": "personal",
+      "kaggleLabel": "entertainment",
+      "source": "financial-descriptions"
+    },
+    {
+      "narration": "IKEA furniture shopping",
+      "category": "personal",
+      "kaggleLabel": "Shopping",
+      "source": "indian-banking-text"
+    },
+    {
+      "narration": "MakeMyTrip hotel booking",
+      "category": "personal",
+      "kaggleLabel": "Travel",
+      "source": "indian-banking-text"
+    },
+    {
+      "narration": "Uber ride payment",
+      "category": "personal",
+      "kaggleLabel": "Travel",
+      "source": "indian-banking-text"
+    },
+    {
+      "narration": "Flipkart electronics purchase",
+      "category": "personal",
+      "kaggleLabel": "Shopping",
+      "source": "indian-banking-text"
+    },
+    {
+      "narration": "HDFC home loan EMI",
+      "category": "emi",
+      "kaggleLabel": "EMI",
+      "source": "indian-banking-text"
+    },
+    {
+      "narration": "Zerodha stock purchase",
+      "category": "personal",
+      "kaggleLabel": "Investment",
+      "source": "indian-banking-text"
+    },
+    {
+      "narration": "Restaurant dining at",
+      "category": "personal",
+      "kaggleLabel": "Food",
+      "source": "indian-banking-text"
+    },
+    {
+      "narration": "Zomato dinner bill",
+      "category": "personal",
+      "kaggleLabel": "Food",
+      "source": "indian-banking-text"
+    },
+    {
+      "narration": "Credit card EMI installment",
+      "category": "emi",
+      "kaggleLabel": "EMI",
+      "source": "indian-banking-text"
+    },
+    {
+      "narration": "Groww ETF investment",
+      "category": "personal",
+      "kaggleLabel": "Investment",
+      "source": "indian-banking-text"
+    },
+    {
+      "narration": "Swiggy order payment",
+      "category": "personal",
+      "kaggleLabel": "Food",
+      "source": "indian-banking-text"
+    },
+    {
+      "narration": "Ola cab fare",
+      "category": "personal",
+      "kaggleLabel": "Travel",
+      "source": "indian-banking-text"
+    },
+    {
+      "narration": "Dominos pizza order",
+      "category": "personal",
+      "kaggleLabel": "Food",
+      "source": "indian-banking-text"
+    },
+    {
+      "narration": "Amazon online shopping",
+      "category": "personal",
+      "kaggleLabel": "Shopping",
+      "source": "indian-banking-text"
+    },
+    {
+      "narration": "Petrol pump fuel payment",
+      "category": "personal",
+      "kaggleLabel": "Travel",
+      "source": "indian-banking-text"
+    },
+    {
+      "narration": "Reliance Digital purchase",
+      "category": "personal",
+      "kaggleLabel": "Shopping",
+      "source": "indian-banking-text"
+    },
+    {
+      "narration": "Personal loan EMI deduction",
+      "category": "emi",
+      "kaggleLabel": "EMI",
+      "source": "indian-banking-text"
+    },
+    {
+      "narration": "SBI car loan EMI",
+      "category": "emi",
+      "kaggleLabel": "EMI",
+      "source": "indian-banking-text"
+    },
+    {
+      "narration": "Fixed deposit investment",
+      "category": "personal",
+      "kaggleLabel": "Investment",
+      "source": "indian-banking-text"
+    },
+    {
+      "narration": "SIP investment in mutual fund",
+      "category": "personal",
+      "kaggleLabel": "Investment",
+      "source": "indian-banking-text"
+    },
+    {
+      "narration": "Mobile EMI payment",
+      "category": "emi",
+      "kaggleLabel": "EMI",
+      "source": "indian-transactions-text"
+    },
+    {
+      "narration": "Education loan EMI",
+      "category": "emi",
+      "kaggleLabel": "EMI",
+      "source": "indian-transactions-text"
+    },
+    {
+      "narration": "NPS contribution",
+      "category": "personal",
+      "kaggleLabel": "Investment",
+      "source": "indian-transactions-text"
+    },
+    {
+      "narration": "Electronics purchase",
+      "category": "personal",
+      "kaggleLabel": "Shopping",
+      "source": "indian-transactions-text"
+    },
+    {
+      "narration": "Hotel dinner bill",
+      "category": "personal",
+      "kaggleLabel": "Food",
+      "source": "indian-transactions-text"
+    },
+    {
+      "narration": "IRCTC train ticket",
+      "category": "personal",
+      "kaggleLabel": "Travel",
+      "source": "indian-transactions-text"
+    },
+    {
+      "narration": "Zomato food delivery",
+      "category": "personal",
+      "kaggleLabel": "Food",
+      "source": "indian-transactions-text"
+    },
+    {
+      "narration": "Myntra fashion order",
+      "category": "personal",
+      "kaggleLabel": "Shopping",
+      "source": "indian-transactions-text"
+    },
+    {
+      "narration": "Metro card recharge",
+      "category": "personal",
+      "kaggleLabel": "Travel",
+      "source": "indian-transactions-text"
+    },
+    {
+      "narration": "ETF purchase",
+      "category": "personal",
+      "kaggleLabel": "Investment",
+      "source": "indian-transactions-text"
+    },
+    {
+      "narration": "eBay online order",
+      "category": "personal",
+      "kaggleLabel": "Shopping",
+      "source": "indian-transactions-text"
+    },
+    {
+      "narration": "Stock market investment",
+      "category": "personal",
+      "kaggleLabel": "Investment",
+      "source": "indian-transactions-text"
+    },
+    {
+      "narration": "Bus ticket purchase",
+      "category": "personal",
+      "kaggleLabel": "Travel",
+      "source": "indian-transactions-text"
+    },
+    {
+      "narration": "Grocery food items",
+      "category": "personal",
+      "kaggleLabel": "Food",
+      "source": "indian-transactions-text"
+    },
+    {
+      "narration": "Cafe coffee purchase",
+      "category": "personal",
+      "kaggleLabel": "Food",
+      "source": "indian-transactions-text"
+    },
+    {
+      "narration": "Hotel stay booking",
+      "category": "personal",
+      "kaggleLabel": "Travel",
+      "source": "indian-transactions-text"
+    },
+    {
+      "narration": "Demat account transfer",
+      "category": "personal",
+      "kaggleLabel": "Investment",
+      "source": "indian-transactions-text"
+    },
+    {
+      "narration": "Lifestyle store purchase",
+      "category": "personal",
+      "kaggleLabel": "Shopping",
+      "source": "indian-transactions-text"
+    },
+    {
+      "narration": "Consumer durable EMI",
+      "category": "emi",
+      "kaggleLabel": "EMI",
+      "source": "indian-transactions-text"
+    },
+    {
+      "narration": "Personal loan EMI",
+      "category": "emi",
+      "kaggleLabel": "EMI",
+      "source": "indian-transactions-text"
+    },
+    {
+      "narration": "NEFT/416618/SAL/BHARATRETA",
+      "category": "salary",
+      "kaggleLabel": "salary",
+      "source": "loan-underwriting"
+    },
+    {
+      "narration": "NEFT-RENT-LANDLORD-JAN2024",
+      "category": "rent",
+      "kaggleLabel": "rent",
+      "source": "loan-underwriting"
+    },
+    {
+      "narration": "UPI-SWIGGY-PAYMENT-41682",
+      "category": "personal",
+      "kaggleLabel": "discretionary",
+      "source": "loan-underwriting"
+    },
+    {
+      "narration": "UPI-BIGBASKET-PAYMENT-93123",
+      "category": "personal",
+      "kaggleLabel": "discretionary",
+      "source": "loan-underwriting"
+    },
+    {
+      "narration": "NEFT-N353960-SALARY-NEXGENSYSTEMS-FEB2024",
+      "category": "salary",
+      "kaggleLabel": "salary",
+      "source": "loan-underwriting"
+    },
+    {
+      "narration": "NEFT-RENT-LANDLORD-FEB2024",
+      "category": "rent",
+      "kaggleLabel": "rent",
+      "source": "loan-underwriting"
+    },
+    {
+      "narration": "ECS-RETURN-INSUFFICIENT FUNDS",
+      "category": "bounce_reversal",
+      "kaggleLabel": "bounce",
+      "source": "loan-underwriting"
+    },
+    {
+      "narration": "ECS-EMI-ICICI-LOAN269641",
+      "category": "emi",
+      "kaggleLabel": "emi",
+      "source": "loan-underwriting"
+    },
+    {
+      "narration": "ECS-EMI-ICICI-LOAN123734",
+      "category": "emi",
+      "kaggleLabel": "emi",
+      "source": "loan-underwriting"
+    },
+    {
+      "narration": "NEFT-TRANSFER-IN-230625",
+      "category": "transfer_in",
+      "kaggleLabel": "window_dressing",
+      "source": "loan-underwriting"
+    },
+    {
+      "narration": "NEFT-BUSINESS RECEIPT-070124",
+      "category": "business_in",
+      "kaggleLabel": "business_income",
+      "source": "loan-underwriting"
+    },
+    {
+      "narration": "NEFT-BUSINESS RECEIPT-290124",
+      "category": "business_in",
+      "kaggleLabel": "business_income",
+      "source": "loan-underwriting"
+    },
+    {
+      "narration": "NEFT-TRANSFER-IN-250625",
+      "category": "transfer_in",
+      "kaggleLabel": "window_dressing",
+      "source": "loan-underwriting"
+    },
+    {
+      "narration": "NEFT/RAJESH MILLS/GREY CLOTH",
+      "category": "supplier",
+      "kaggleLabel": "",
+      "source": "product"
+    },
+    {
+      "narration": "GST/CBDT TAX PAYMENT",
+      "category": "tax",
+      "kaggleLabel": "",
+      "source": "product"
+    },
+    {
+      "narration": "ATM CASH WDL",
+      "category": "cash_out",
+      "kaggleLabel": "",
+      "source": "product"
+    },
+    {
+      "narration": "CASH DEPOSIT SELF",
+      "category": "cash_in",
+      "kaggleLabel": "",
+      "source": "product"
+    },
+    {
+      "narration": "IMPS/OWN SAVINGS/SELF",
+      "category": "self_in",
+      "kaggleLabel": "",
+      "source": "product"
+    },
+    {
+      "narration": "NEFT/TERM LOAN DISBURSAL",
+      "category": "loan_in",
+      "kaggleLabel": "",
+      "source": "product"
+    },
+    {
+      "narration": "CHEQUE RETURN CHARGES",
+      "category": "bounce_charge",
+      "kaggleLabel": "",
+      "source": "product"
+    }
+  ],
+  "grades": [
+    {
+      "letter": "A",
+      "label": "Strong",
+      "points": [
+        90,
+        100
+      ],
+      "when": "On the 5,000-customer underwriting ledger, EMI plus rent at or under the median 24% of earned inflow, and no bounce events.",
+      "businessRate": [
+        0.16,
+        0.21
+      ]
+    },
+    {
+      "letter": "B",
+      "label": "Acceptable",
+      "points": [
+        75,
+        89
+      ],
+      "when": "EMI plus rent through the 75th percentile, 27% of earned inflow, and at most one bounce. Cash left stays positive.",
+      "businessRate": [
+        0.2,
+        0.26
+      ]
+    },
+    {
+      "letter": "C",
+      "label": "Watch",
+      "points": [
+        60,
+        74
+      ],
+      "when": "EMI plus rent through the 90th percentile, 39% of earned inflow, or more than one bounce. Cash left is still positive.",
+      "businessRate": [
+        0.24,
+        0.32
+      ]
+    },
+    {
+      "letter": "D",
+      "label": "Weak",
+      "points": [
+        40,
+        59
+      ],
+      "when": "Above that 39% obligation band, or several bounce events, or earned inflow too thin for the file.",
+      "businessRate": [
+        0.24,
+        0.32
+      ]
+    },
+    {
+      "letter": "E",
+      "label": "Not a fit",
+      "points": [
+        0,
+        39
+      ],
+      "when": "Fewer than 6 months, or cash left is negative with returns, or the statement has almost no earned inflow.",
+      "businessRate": [
+        0.24,
+        0.32
+      ]
+    }
+  ],
+  "notes": "Narration examples are rows from the Kaggle text sets and the underwriting ledger, mapped onto this file categories. Across 5,000 customers, EMI plus rent is 24% of income at the median, 27% at the 75th percentile, and 39% at the 90th. 2,602 customers have no bounce, 1,776 have one, and 622 have two or more, over 18 months. That ledger has loan types personal, home, auto, and mortgage, and no interest-rate column, so the rate bands stay the ones on this file. Working-capital rates sit about 2 points above the business band, capped at 30-34%. UPI merchant rates sit about 4 points above, capped at 36%, over 9 months. Amounts are calculated in code, not by the model.",
+  "datasets": [
+    {
+      "id": "coderanand/indian-banking-transaction-text-dataset",
+      "rows": 11000,
+      "labels": [
+        "Food",
+        "Travel",
+        "EMI",
+        "Investment",
+        "Shopping"
+      ]
+    },
+    {
+      "id": "yugujdgd/indian-transactions-text-classification-dataset",
+      "rows": 6000,
+      "labels": [
+        "Food",
+        "Travel",
+        "EMI",
+        "Investment",
+        "Shopping"
+      ]
+    },
+    {
+      "id": "bhavyasingh25/financial-transaction-description-dataset",
+      "rows": 6000,
+      "labels": [
+        "food",
+        "travel",
+        "emi",
+        "investment",
+        "shopping",
+        "utilities",
+        "healthcare",
+        "education",
+        "entertainment"
+      ]
+    },
+    {
+      "id": "shuchismitamallick/loan-underwriting-and-customer-behavior-dataset",
+      "rows": 1033406,
+      "labels": [
+        "salary",
+        "business_income",
+        "rent",
+        "emi",
+        "discretionary",
+        "bounce",
+        "window_dressing"
+      ],
+      "loanTypes": [
+        "personal",
+        "home",
+        "auto",
+        "mortgage"
+      ]
+    },
+    {
+      "id": "kiruthikas005/msme-invoices-and-transactions",
+      "rows": 12,
+      "labels": [
+        "credit",
+        "debit"
+      ]
+    }
+  ]
+}

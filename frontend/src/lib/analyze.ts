@@ -3,6 +3,7 @@ import { buildFlows } from "./flows";
 import { buildGroups } from "./groups";
 import { monthKey, monthLabel, prettyDate } from "./format";
 import type {
+  AiReading,
   Analysis,
   Category,
   IntegrityCheck,
@@ -15,14 +16,36 @@ import type {
   TxnInput,
 } from "./types";
 
+const KNOWN: Category[] = [
+  "business_in",
+  "salary",
+  "transfer_in",
+  "loan_in",
+  "self_in",
+  "cash_in",
+  "emi",
+  "rent",
+  "supplier",
+  "utilities",
+  "tax",
+  "bounce_reversal",
+  "bounce_charge",
+  "cash_out",
+  "personal",
+  "self_out",
+  "transfer_out",
+  "other_in",
+  "other_out",
+];
+
 const EARNED: Category[] = ["business_in", "salary"];
 
-export function analyze(inputs: TxnInput[], policy: Policy): Analysis {
+export function analyze(inputs: TxnInput[], policy: Policy, reading?: AiReading | null): Analysis {
   const txns = tag(inputs);
   const months = buildMonths(txns);
   const metrics = buildMetrics(txns, months);
   const integrity = buildIntegrity(txns, metrics.months, policy.minMonths);
-  const grade = score(metrics, integrity, policy);
+  const grade = applyReading(score(metrics, integrity, policy), reading);
   const reasons = buildReasons(txns, months, metrics, policy, grade);
   const counterparties = buildCounterparties(txns);
   const outflowMix = buildOutflows(months);
@@ -31,10 +54,10 @@ export function analyze(inputs: TxnInput[], policy: Policy): Analysis {
     txns,
   );
 
-  const flows = buildFlows(txns, months, metrics, grade, policy);
+  const flows = buildFlows(txns, months, metrics, grade, policy, reading?.rates.business);
   const groups = buildGroups(txns, months);
   const capacity = buildCapacity(metrics, policy, flows.extraCommit);
-  const summary = writeSummary(metrics, capacity, grade, policy, flows);
+  const summary = reading?.summary || writeSummary(metrics, capacity, grade, policy, flows);
 
   return {
     txns,
@@ -85,10 +108,26 @@ function tag(inputs: TxnInput[]): Txn[] {
     .map(({ txn }, index) => ({
       ...txn,
       id: `t${index + 1}`,
-      category: categorize(txn),
+      category: txn.category && KNOWN.includes(txn.category) ? txn.category : categorize(txn),
       counterparty: counterparty(txn.description),
     }));
 }
+
+function applyReading(
+  grade: Analysis["grade"],
+  reading?: AiReading | null,
+): Analysis["grade"] {
+  if (!reading) return grade;
+  const letter = KNOWN_LETTERS.has(reading.letter) ? reading.letter : grade.letter;
+  return {
+    ...grade,
+    letter,
+    points: Number.isFinite(reading.points) ? reading.points : grade.points,
+    label: reading.label || grade.label,
+  };
+}
+
+const KNOWN_LETTERS = new Set<Analysis["grade"]["letter"]>(["A", "B", "C", "D", "E"]);
 
 function emptyMonth(key: string): MonthPoint {
   return {

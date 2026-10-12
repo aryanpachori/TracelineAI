@@ -2,22 +2,25 @@
 
 import { useState } from "react";
 import { PrivacyNote } from "@/components/analyze/privacy-note";
+import { ReadingLoader } from "@/components/analyze/reading-loader";
 import { SAMPLE_CASE, sampleCsv } from "@/lib/sample";
 
 export function UploadPanel({
   onFile,
+  onUpload,
   error,
+  busy,
+  busyFile,
 }: {
   onFile: (text: string, fileName: string, caseRef: string) => void;
+  onUpload: (file: File, caseRef: string) => void;
   error: string | null;
+  busy: boolean;
+  busyFile?: string;
 }) {
   const [caseRef, setCaseRef] = useState("");
   const [over, setOver] = useState(false);
   const [paste, setPaste] = useState("");
-
-  function take(text: string, fileName: string) {
-    onFile(text, fileName, caseRef.trim());
-  }
 
   return (
     <div className="mx-auto max-w-[760px] px-5 py-12">
@@ -26,8 +29,7 @@ export function UploadPanel({
         Bring the bank statement.
       </h1>
       <p className="mt-4 max-w-[40rem] text-[1.05rem]">
-        CSV, with a header row. Date, description, debit, credit, and balance if you have it.
-        Indian dates (DD-MM-YYYY) are fine. AI splits the whole statement into income, spending, and a credit assessment.
+        CSV or PDF, from any bank. AI reads the file, groups every credit and debit, and sizes the facility.
       </p>
       <PrivacyNote />
 
@@ -51,19 +53,26 @@ export function UploadPanel({
           event.preventDefault();
           setOver(false);
           const file = event.dataTransfer.files?.[0];
-          if (file) void readFile(file, take);
+          if (file) onUpload(file, caseRef.trim());
         }}
-        className={`mt-6 block cursor-pointer border px-5 py-8 ${over ? "border-ink bg-sheet" : "border-rule bg-transparent"}`}
+        className={`mt-6 block border px-5 py-8 ${busy ? "pointer-events-none border-rule bg-white" : over ? "cursor-pointer border-ink bg-sheet" : "cursor-pointer border-rule bg-transparent"}`}
       >
-        <span className="font-serif text-2xl">Drop a CSV here, or choose a file</span>
-        <span className="mt-1 block text-sm text-muted">.csv or .txt</span>
+        {busy ? (
+          <ReadingLoader fileName={busyFile} />
+        ) : (
+          <>
+            <span className="font-serif text-2xl">Drop a statement here, or choose a file</span>
+            <span className="mt-1 block text-sm text-muted">.csv, .txt, or .pdf</span>
+          </>
+        )}
         <input
           type="file"
-          accept=".csv,.txt,text/csv,text/plain"
+          accept=".csv,.txt,.pdf,text/csv,text/plain,application/pdf"
           className="sr-only"
+          disabled={busy}
           onChange={(event) => {
             const file = event.target.files?.[0];
-            if (file) void readFile(file, take);
+            if (file) onUpload(file, caseRef.trim());
           }}
         />
       </label>
@@ -82,10 +91,10 @@ export function UploadPanel({
         <button
           type="button"
           className="mt-3 border border-ink px-3 py-1.5 disabled:opacity-40"
-          disabled={!paste.trim()}
-          onClick={() => take(paste, "pasted-statement.csv")}
+          disabled={!paste.trim() || busy}
+          onClick={() => onUpload(new File([paste], "pasted-statement.csv", { type: "text/csv" }), caseRef.trim())}
         >
-          Read pasted rows
+          {busy ? "Reading…" : "Read pasted rows"}
         </button>
       </div>
 
@@ -111,12 +120,6 @@ export function UploadPanel({
       </div>
     </div>
   );
-}
-
-function readFile(file: File, take: (text: string, fileName: string) => void) {
-  const reader = new FileReader();
-  reader.onload = () => take(String(reader.result ?? ""), file.name);
-  reader.readAsText(file);
 }
 
 function downloadSample() {

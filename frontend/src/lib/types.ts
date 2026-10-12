@@ -25,6 +25,17 @@ export type TxnInput = {
   debit: number;
   credit: number;
   balance: number | null;
+  category?: Category;
+};
+
+export type AiReading = {
+  letter: "A" | "B" | "C" | "D" | "E";
+  points: number;
+  label: string;
+  summary: string;
+  rates: {
+    business: [number, number];
+  };
 };
 
 export type Txn = TxnInput & {

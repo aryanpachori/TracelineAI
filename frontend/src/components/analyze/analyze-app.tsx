@@ -10,9 +10,10 @@ import { analyze } from "@/lib/analyze";
 import { parseStatement } from "@/lib/parseStatement";
 import { DEFAULT_CHART, DEFAULT_WIDGETS, STANDARD_POLICY } from "@/lib/policy";
 import { SAMPLE_CASE, sampleCsv } from "@/lib/sample";
-import type { ChartConfig, Policy, TxnInput, WidgetSetting } from "@/lib/types";
+import type { AiReading, ChartConfig, Policy, TxnInput, WidgetSetting } from "@/lib/types";
 
 const STORAGE_KEY = "traceline-desk-v1";
+const ANALYZE_URL = "http://127.0.0.1:8000/analyze";
 
 type Desk = {
   chart: ChartConfig;
@@ -23,9 +24,12 @@ export function AnalyzeApp() {
   const params = useSearchParams();
   const reduce = useReducedMotion();
   const [rows, setRows] = useState<TxnInput[] | null>(null);
+  const [reading, setReading] = useState<AiReading | null>(null);
   const [fileName, setFileName] = useState("");
   const [caseRef, setCaseRef] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [busyFile, setBusyFile] = useState("");
   const [policy, setPolicy] = useState<Policy>(STANDARD_POLICY);
   const [chart, setChart] = useState<ChartConfig>(DEFAULT_CHART);
   const [widgets, setWidgets] = useState<WidgetSetting[]>(DEFAULT_WIDGETS);
@@ -52,7 +56,7 @@ export function AnalyzeApp() {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ chart, widgets } satisfies Desk));
   }, [booted, chart, widgets]);
 
-  const analysis = useMemo(() => (rows ? analyze(rows, policy) : null), [rows, policy]);
+  const analysis = useMemo(() => (rows ? analyze(rows, policy, reading) : null), [rows, policy, reading]);
   const waitingForSample = !booted && params.get("sample") === "1";
 
   function openText(text: string, name: string, reference: string) {
@@ -62,9 +66,42 @@ export function AnalyzeApp() {
       return;
     }
     setError(parsed.skipped ? `${parsed.skipped} rows skipped.` : null);
+    setReading(null);
     setRows(parsed.rows);
     setFileName(name);
     setCaseRef(reference);
+  }
+
+  async function openUpload(file: File, reference: string) {
+    setBusy(true);
+    setBusyFile(file.name);
+    setError(null);
+    const body = new FormData();
+    body.append("file", file);
+    body.append("case_ref", reference);
+    try {
+      const response = await fetch(ANALYZE_URL, { method: "POST", body });
+      const payload = (await response.json()) as {
+        detail?: string | { msg: string }[];
+        rows?: TxnInput[];
+        reading?: AiReading;
+        fileName?: string;
+      };
+      if (!response.ok || !payload.rows?.length || !payload.reading) {
+        const detail = typeof payload.detail === "string" ? payload.detail : "The statement could not be read.";
+        setError(detail);
+        return;
+      }
+      setRows(payload.rows);
+      setReading(payload.reading);
+      setFileName(payload.fileName || file.name);
+      setCaseRef(reference);
+    } catch {
+      setError("The local reader is not running. Start it, then send the file again.");
+    } finally {
+      setBusy(false);
+      setBusyFile("");
+    }
   }
 
   return (
@@ -103,6 +140,7 @@ export function AnalyzeApp() {
               onWidgets={setWidgets}
               onReset={() => {
                 setRows(null);
+                setReading(null);
                 setError(null);
                 setPolicy(STANDARD_POLICY);
               }}
@@ -116,7 +154,7 @@ export function AnalyzeApp() {
             exit={reduce ? undefined : { opacity: 0 }}
             transition={{ duration: 0.2 }}
           >
-            <UploadPanel onFile={openText} error={error} />
+            <UploadPanel onFile={openText} onUpload={openUpload} error={error} busy={busy} busyFile={busyFile} />
           </motion.div>
         )}
       </AnimatePresence>

@@ -29,7 +29,7 @@ export function SpendSummary({ analysis }: { analysis: Analysis }) {
           </button>
         ) : null}
       </div>
-      <p className="mt-3 text-sm text-muted">Written from the grouped spends on this statement. The rows stay in this browser.</p>
+      <p className="mt-3 text-sm text-muted">Written from the grouped spends on this statement.</p>
     </div>
   );
 }

@@ -15,9 +15,9 @@ const outfit = Outfit({
 });
 
 export const metadata: Metadata = {
-  title: "Traceline — the whole account, grouped",
+  title: "Traceline — AI credit analyzer",
   description:
-    "Traceline reads a bank statement, splits every credit and debit into groups, and shows where the money comes from, what it is spent on, and what facility the cash flow can carry.",
+    "AI credit analyzer for a bank statement. Traceline groups every credit and debit, shows what the account spends, and sizes the facility the cash flow can carry.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

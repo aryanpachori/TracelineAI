@@ -1,5 +1,9 @@
 import json
 import os
+import sys
+import asyncio
+import time
+from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from pathlib import Path
 
@@ -16,7 +20,7 @@ CATEGORIES = set(LABELS["categories"])
 SYSTEM = """You extract Indian bank-statement rows. Return JSON only: {"rows":[...]}.
 Each row has date (YYYY-MM-DD), narration, debit, credit, balance, category.
 debit and credit are numbers. One side is 0. balance is a number or null.
-category must be one of the allowed labels. Use the examples. Do not invent rows that are not in the text.
+category must be one of the allowed labels. Do not invent rows that are not in the text.
 A credit from a buyer, invoice, or NEFT/RTGS/IMPS receipt is business_in. Salary is salary.
 A loan disbursal is loan_in. A transfer from the same person's other account is self_in. Cash deposit is cash_in.
 EMI, NACH loan, or home-loan debit is emi. Rent is rent. Supplier, mill, or stock purchase is supplier.
@@ -26,32 +30,39 @@ ATM withdrawal is cash_out. Food, fuel, shopping, travel, pharmacy, school, SIP,
 """
 
 
-def labels_block() -> str:
-    lines = ["Allowed categories: " + ", ".join(LABELS["categories"])]
-    lines.append("Examples:")
-    for item in LABELS["examples"]:
-        lines.append(f"- {item['narration']} -> {item['category']}")
-    return "\n".join(lines)
+CHUNK_SIZE = 16000
+WORKERS = 16
+
+
+def note(message: str) -> None:
+    print(message, file=sys.stderr, flush=True)
 
 
 def complete(system: str, user: str) -> dict:
     key = os.environ.get("OPENROUTER_API_KEY", "").strip()
     if not key:
         raise RuntimeError("OPENROUTER_API_KEY is missing from backend/.env")
-    response = httpx.post(
-        "https://openrouter.ai/api/v1/chat/completions",
-        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-        json={
-            "model": MODEL,
-            "temperature": 0,
-            "response_format": {"type": "json_object"},
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-        },
-        timeout=120,
-    )
+    response = None
+    for attempt in range(4):
+        response = httpx.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+            json={
+                "model": MODEL,
+                "temperature": 0,
+                "response_format": {"type": "json_object"},
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+            },
+            timeout=90,
+        )
+        if response.status_code != 429 or attempt == 3:
+            break
+        time.sleep(1.2 * (attempt + 1))
+    if response is None:
+        raise RuntimeError("The model call failed.")
     if response.status_code in {401, 403}:
         raise RuntimeError("The model key was rejected. Put a live key in backend/.env.")
     if response.status_code >= 400:
@@ -79,18 +90,17 @@ def statement_text(name: str, raw: bytes) -> str:
     return raw.decode("utf-8", errors="replace")
 
 
-def extract_rows(text: str) -> list[dict]:
+async def extract_rows(text: str) -> list[dict]:
+    parts = chunks(text, CHUNK_SIZE)
+    workers = min(WORKERS, len(parts)) or 1
+    note(f"statement sections {len(parts)} on {workers} threads")
+    loop = asyncio.get_running_loop()
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        batches = await asyncio.gather(*(loop.run_in_executor(pool, read_part, part) for part in parts))
     rows = []
     seen = set()
-    for part in chunks(text):
-        data = complete(
-            SYSTEM,
-            labels_block() + "\n\nStatement:\n" + part,
-        )
-        for item in data.get("rows") or []:
-            row = clean_row(item)
-            if not row:
-                continue
+    for batch in batches:
+        for row in batch:
             apply_narration_model(row)
             key = (row["date"], row["description"], row["debit"], row["credit"])
             if key in seen:
@@ -101,6 +111,30 @@ def extract_rows(text: str) -> list[dict]:
         raise ValueError("No transactions could be read from this file.")
     rows.sort(key=lambda row: row["date"])
     return rows
+
+
+def read_part(part: str) -> list[dict]:
+    try:
+        data = complete(SYSTEM, "Statement excerpt:\n" + part)
+    except json.JSONDecodeError:
+        if len(part) < 2500:
+            raise ValueError("A section of the statement came back incomplete. Export a CSV from the bank and send that.") from None
+        mid = split_at(part)
+        return read_part(part[:mid]) + read_part(part[mid:])
+    rows = []
+    for item in data.get("rows") or []:
+        row = clean_row(item)
+        if row:
+            rows.append(row)
+    return rows
+
+
+def split_at(part: str) -> int:
+    mid = len(part) // 2
+    break_at = part.rfind("\n", 0, mid)
+    if break_at > 400:
+        return break_at
+    return mid
 
 
 def apply_narration_model(row: dict) -> None:
@@ -114,7 +148,7 @@ def apply_narration_model(row: dict) -> None:
     learn_from_teacher(row["description"], row["category"], row["debit"], row["credit"], confidence)
 
 
-def chunks(text: str, size: int = 60000) -> list[str]:
+def chunks(text: str, size: int = CHUNK_SIZE) -> list[str]:
     if len(text) <= size:
         return [text]
     parts = []

@@ -5,7 +5,6 @@ import { CashflowChart, CreditMixChart, SpendMonthChart, SpendShareChart } from 
 import { OpenProvider, TrailBar, focusIds, openLabel, openMatch, useOpen } from "@/components/analyze/depth";
 import { Figure } from "@/components/analyze/figure";
 import { buildCaseFile } from "@/lib/case-file";
-import { PrivacyNote } from "@/components/analyze/privacy-note";
 import { SpendSummary } from "@/components/analyze/spend-summary";
 import { downloadText } from "@/components/analyze/upload-panel";
 import { CATEGORY_LABEL, inr, inrBand, inrCompact, pct, prettyDate, signedPct } from "@/lib/format";
@@ -94,7 +93,6 @@ export function Report({
         AI credit file. {analysis.txns.length} rows read from the statement. Statement coverage{" "}
         {analysis.dataConfidence}, from balance, dates, length, and how completely each narration was grouped.
       </p>
-      <PrivacyNote />
 
       {arrange ? <Arrange widgets={widgets} onWidgets={onWidgets} /> : null}
 

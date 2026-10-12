@@ -40,7 +40,7 @@ async def analyze(file: UploadFile = File(...), case_ref: str = Form("")):
     name = file.filename or "statement"
     try:
         text = statement_text(name, raw)
-        rows = extract_rows(text)
+        rows = await extract_rows(text)
         metrics = measure(rows)
         reading = choose_grade(metrics)
     except ValueError as error:

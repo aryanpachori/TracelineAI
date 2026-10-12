@@ -13,7 +13,7 @@ import { SAMPLE_CASE, sampleCsv } from "@/lib/sample";
 import type { AiReading, ChartConfig, Policy, TxnInput, WidgetSetting } from "@/lib/types";
 
 const STORAGE_KEY = "traceline-desk-v1";
-const ANALYZE_URL = "http://127.0.0.1:8000/analyze";
+const ANALYZE_URL = "http://127.0.0.1:8001/analyze";
 
 type Desk = {
   chart: ChartConfig;

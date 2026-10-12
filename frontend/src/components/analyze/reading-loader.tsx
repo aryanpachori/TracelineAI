@@ -8,6 +8,12 @@ const STEPS = ["Reading the file", "Grouping each row", "Sizing the facility"];
 export function ReadingLoader({ fileName }: { fileName?: string }) {
   const reduce = useReducedMotion();
   const [step, setStep] = useState(0);
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    const clock = window.setInterval(() => setElapsed((current) => current + 1), 1000);
+    return () => window.clearInterval(clock);
+  }, []);
 
   useEffect(() => {
     if (reduce) return;
@@ -34,6 +40,7 @@ export function ReadingLoader({ fileName }: { fileName?: string }) {
           );
         })}
       </ol>
+      <p className="mt-4 text-sm text-muted">{elapsed}s · a long statement stays here until the reader finishes</p>
       <div className="reader-bar mt-5" aria-hidden="true">
         <span />
       </div>

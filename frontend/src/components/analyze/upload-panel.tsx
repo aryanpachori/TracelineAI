@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { PrivacyNote } from "@/components/analyze/privacy-note";
 import { ReadingLoader } from "@/components/analyze/reading-loader";
 import { SAMPLE_CASE, sampleCsv } from "@/lib/sample";
 
@@ -31,7 +30,6 @@ export function UploadPanel({
       <p className="mt-4 max-w-[40rem] text-[1.05rem]">
         CSV or PDF, from any bank. AI reads the file, groups every credit and debit, and sizes the facility.
       </p>
-      <PrivacyNote />
 
       <label className="mt-8 block text-sm">
         Case reference, optional
@@ -108,7 +106,8 @@ export function UploadPanel({
         <div className="mt-4 flex flex-wrap gap-4 text-sm">
           <button
             type="button"
-            className="on-ink px-3 py-1.5"
+            className="on-ink px-3 py-1.5 disabled:opacity-40"
+            disabled={busy}
             onClick={() => onFile(sampleCsv(), SAMPLE_CASE.fileName, caseRef.trim() || SAMPLE_CASE.reference)}
           >
             Open the sample

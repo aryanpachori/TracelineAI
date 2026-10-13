@@ -1,12 +1,13 @@
 "use client";
 
-import { useMemo, useState, type ReactNode } from "react";
+import { useMemo, useRef, useState, type ReactNode } from "react";
 import { CashflowChart, CreditMixChart, SpendMonthChart, SpendShareChart } from "@/components/analyze/charts";
 import { OpenProvider, TrailBar, focusIds, openLabel, openMatch, useOpen } from "@/components/analyze/depth";
 import { Figure } from "@/components/analyze/figure";
 import { buildCaseFile } from "@/lib/case-file";
 import { SpendSummary } from "@/components/analyze/spend-summary";
 import { downloadCreditFolder } from "@/lib/credit-pack";
+import { captureReportPdf } from "@/lib/report-pdf";
 import { partyKind, railLabel } from "@/lib/categorize";
 import { CATEGORY_LABEL, datasetRate, inr, inrBand, inrCompact, pct, prettyDate, signedPct, yearsLabel } from "@/lib/format";
 import { groupName } from "@/lib/groups";
@@ -37,6 +38,25 @@ export function Report({
   onReset: () => void;
 }) {
   const [arrange, setArrange] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saveNote, setSaveNote] = useState("");
+  const sheet = useRef<HTMLElement>(null);
+
+  async function saveFile() {
+    if (!sheet.current || saving) return;
+    setSaving(true);
+    setSaveNote("");
+    try {
+      const file = buildCaseFile(analysis, policy, caseRef, fileName);
+      const name = caseRef || fileName || "credit-file";
+      const pdf = await captureReportPdf(sheet.current);
+      downloadCreditFolder(name, JSON.stringify(file, null, 2), pdf);
+    } catch {
+      setSaveNote("The PDF could not be prepared. Try again.");
+    } finally {
+      setSaving(false);
+    }
+  }
 
   const blocks: Record<WidgetId, ReactNode> = {
     verdict: <Verdict analysis={analysis} policy={policy} />,
@@ -58,7 +78,7 @@ export function Report({
 
   return (
     <OpenProvider>
-    <article className="mx-auto max-w-[1080px] px-5 pb-44">
+    <article ref={sheet} className="mx-auto max-w-[1080px] px-5 pb-44">
       <header className="flex flex-wrap items-end justify-between gap-4 pt-8">
         <div>
           <p className="text-sm text-muted">{fileName}</p>
@@ -71,17 +91,11 @@ export function Report({
           <button type="button" className="underline underline-offset-4" onClick={() => setArrange((open) => !open)}>
             {arrange ? "Close arrangement" : "Arrange sections"}
           </button>
-          <button
-            type="button"
-            className="underline underline-offset-4"
-            onClick={() => {
-              const file = buildCaseFile(analysis, policy, caseRef, fileName);
-              const name = caseRef || fileName || "credit-file";
-              downloadCreditFolder(name, JSON.stringify(file, null, 2), creditPdfLines(analysis, policy, caseRef, fileName));
-            }}
-          >
-            Download the file
+          <button type="button" className="underline underline-offset-4 disabled:opacity-60" disabled={saving} onClick={() => void saveFile()}>
+            {saving ? "Preparing the PDF…" : "Download the file"}
           </button>
+          {saving ? <span className="text-muted">This can take 1–2 minutes.</span> : null}
+          {saveNote ? <span className="text-brass">{saveNote}</span> : null}
           <button type="button" className="underline underline-offset-4" onClick={onReset}>
             New statement
           </button>
@@ -109,40 +123,6 @@ export function Report({
     </article>
     </OpenProvider>
   );
-}
-
-function creditPdfLines(analysis: Analysis, policy: Policy, caseRef: string, fileName: string) {
-  const [rateLow, rateHigh] = datasetRate(analysis.grade.letter);
-  const inflow = analysis.months.reduce((sum, month) => sum + month.totalIn, 0);
-  const outflow = analysis.months.reduce((sum, month) => sum + month.totalOut, 0);
-  const lines = [
-    "Traceline credit file",
-    caseRef || "Untitled case",
-    fileName,
-    analysis.periodLabel,
-    "",
-    `Grade ${analysis.grade.letter}, ${analysis.grade.label}. Readiness ${analysis.grade.points}.`,
-    `New EMI ${inr(analysis.capacity.monthly, 0)} a month.`,
-    `Amount ${inr(analysis.capacity.bandLow, 0)} to ${inr(analysis.capacity.bandHigh, 0)}.`,
-    `Interest ${pct(rateLow)} to ${pct(rateHigh)}. Term ${yearsLabel(policy.tenureMonths)}.`,
-    "",
-    `Inflow ${inr(inflow, 0)}. Outflow ${inr(outflow, 0)}. Net ${inr(inflow - outflow, 0)}.`,
-    "",
-    analysis.summary,
-  ];
-  if (analysis.payability.mode === "cashflow") {
-    lines.push(
-      "",
-      `Cash from work averages ${inr(analysis.payability.workAvg, 0)} a month.`,
-      `Middle month in ${inr(analysis.payability.workIn, 0)}, out ${inr(analysis.payability.spent, 0)}, left ${inr(analysis.payability.left, 0)}.`,
-      `Own-account movement left out: ${inr(analysis.payability.moved, 0)}.`,
-    );
-  }
-  lines.push("", "Notes");
-  analysis.reasons.slice(0, 12).forEach((reason) => {
-    lines.push(`${reason.title}. ${reason.detail}`);
-  });
-  return lines;
 }
 
 function FlowTotals({ analysis }: { analysis: Analysis }) {

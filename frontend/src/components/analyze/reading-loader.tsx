@@ -40,7 +40,9 @@ export function ReadingLoader({ fileName }: { fileName?: string }) {
           );
         })}
       </ol>
-      <p className="mt-4 text-sm text-muted">{elapsed}s · a long statement stays here until the reader finishes</p>
+      <p className="mt-4 text-sm text-muted">
+        {elapsed}s · {elapsed >= 20 ? "This may take a minute or two." : "a long statement stays here until the reader finishes"}
+      </p>
       <div className="reader-bar mt-5" aria-hidden="true">
         <span />
       </div>

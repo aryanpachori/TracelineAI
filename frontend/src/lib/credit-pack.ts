@@ -1,10 +1,10 @@
 const CRC_TABLE = makeCrcTable();
 
-export function downloadCreditFolder(folder: string, json: string, pdfLines: string[]) {
+export function downloadCreditFolder(folder: string, json: string, pdf: Uint8Array) {
   const name = safeName(folder);
   const zip = buildZip(name, [
     { name: "credit-file.json", data: encode(json) },
-    { name: "credit-file.pdf", data: buildPdf(pdfLines) },
+    { name: "credit-file.pdf", data: pdf },
   ]);
   const blob = new Blob([zip], { type: "application/zip" });
   const url = URL.createObjectURL(blob);
@@ -20,96 +20,6 @@ export function downloadCreditFolder(folder: string, json: string, pdfLines: str
 export function safeName(value: string) {
   const cleaned = value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
   return cleaned || "credit-file";
-}
-
-export function buildPdf(lines: string[]) {
-  const pages = paginate(lines.map(ascii));
-  const objects: string[] = [];
-  objects.push("1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n");
-  const fontId = 3;
-  objects.push(`${fontId} 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n`);
-  const pageIds: number[] = [];
-  let next = 4;
-  const pageObjects: string[] = [];
-  pages.forEach((page) => {
-    const contentId = next++;
-    const pageId = next++;
-    pageIds.push(pageId);
-    const stream = pageStream(page);
-    pageObjects.push(`${contentId} 0 obj << /Length ${stream.length} >> stream\n${stream}\nendstream endobj\n`);
-    pageObjects.push(
-      `${pageId} 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents ${contentId} 0 R /Resources << /Font << /F1 ${fontId} 0 R >> >> >> endobj\n`,
-    );
-  });
-  const kids = pageIds.map((id) => `${id} 0 R`).join(" ");
-  objects.splice(1, 0, `2 0 obj << /Type /Pages /Count ${pages.length} /Kids [${kids}] >> endobj\n`);
-  objects.push(...pageObjects);
-  let body = "%PDF-1.4\n";
-  const offsets = [0];
-  objects.forEach((object) => {
-    offsets.push(body.length);
-    body += object;
-  });
-  const xrefAt = body.length;
-  let xref = `xref\n0 ${offsets.length}\n`;
-  xref += "0000000000 65535 f \n";
-  offsets.slice(1).forEach((offset) => {
-    xref += `${String(offset).padStart(10, "0")} 00000 n \n`;
-  });
-  body += xref;
-  body += `trailer << /Size ${offsets.length} /Root 1 0 R >>\nstartxref\n${xrefAt}\n%%EOF`;
-  return encode(body);
-}
-
-function paginate(lines: string[]) {
-  const pages: string[][] = [];
-  let page: string[] = [];
-  lines.forEach((line) => {
-    wrap(line, 88).forEach((part) => {
-      if (page.length >= 42) {
-        pages.push(page);
-        page = [];
-      }
-      page.push(part);
-    });
-  });
-  if (page.length) pages.push(page);
-  if (!pages.length) pages.push(["Traceline credit file"]);
-  return pages;
-}
-
-function wrap(line: string, width: number) {
-  if (line.length <= width) return [line];
-  const parts: string[] = [];
-  let rest = line;
-  while (rest.length > width) {
-    let cut = rest.lastIndexOf(" ", width);
-    if (cut < 24) cut = width;
-    parts.push(rest.slice(0, cut));
-    rest = rest.slice(cut).trimStart();
-  }
-  if (rest) parts.push(rest);
-  return parts;
-}
-
-function pageStream(lines: string[]) {
-  const commands = ["BT", "/F1 11 Tf", "54 750 Td"];
-  lines.forEach((line, index) => {
-    if (index === 0) commands.push("/F1 16 Tf");
-    if (index === 1) commands.push("/F1 11 Tf");
-    if (index > 0) commands.push("0 -16 Td");
-    commands.push(`(${pdfEscape(line)}) Tj`);
-  });
-  commands.push("ET");
-  return commands.join("\n");
-}
-
-function pdfEscape(value: string) {
-  return value.replace(/\\/g, "\\\\").replace(/\(/g, "\\(").replace(/\)/g, "\\)");
-}
-
-function ascii(value: string) {
-  return value.replace(/[^\x20-\x7e]/g, " ").replace(/\s+/g, " ").trim();
 }
 
 export function buildZip(folder: string, files: { name: string; data: Uint8Array }[]) {

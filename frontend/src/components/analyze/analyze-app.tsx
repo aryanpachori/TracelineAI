@@ -2,10 +2,9 @@
 
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { useMemo, useState, useSyncExternalStore } from "react";
 import { Report } from "@/components/analyze/report";
-import { OpeningFile } from "@/components/analyze/reading-loader";
 import { UploadPanel } from "@/components/analyze/upload-panel";
 import { analyze } from "@/lib/analyze";
 import { parseStatement } from "@/lib/parseStatement";
@@ -15,54 +14,71 @@ import type { AiReading, ChartConfig, Policy, TxnInput, WidgetSetting } from "@/
 
 const STORAGE_KEY = "traceline-desk-v1";
 const ANALYZE_URL = process.env.NEXT_PUBLIC_ANALYZE_URL || "http://127.0.0.1:8001/analyze";
+const DESK_EVENT = "traceline-desk";
 
 type Desk = {
   chart: ChartConfig;
   widgets: WidgetSetting[];
 };
 
+const EMPTY_DESK: Desk = { chart: DEFAULT_CHART, widgets: DEFAULT_WIDGETS };
+let deskCache: { raw: string | null; desk: Desk } = { raw: null, desk: EMPTY_DESK };
+
+function subscribeDesk(onStoreChange: () => void) {
+  window.addEventListener("storage", onStoreChange);
+  window.addEventListener(DESK_EVENT, onStoreChange);
+  return () => {
+    window.removeEventListener("storage", onStoreChange);
+    window.removeEventListener(DESK_EVENT, onStoreChange);
+  };
+}
+
+function deskSnapshot(): Desk {
+  const raw = window.localStorage.getItem(STORAGE_KEY);
+  if (raw === deskCache.raw) return deskCache.desk;
+  deskCache = { raw, desk: readDesk() ?? EMPTY_DESK };
+  return deskCache.desk;
+}
+
+function writeDesk(desk: Desk) {
+  const raw = JSON.stringify(desk);
+  window.localStorage.setItem(STORAGE_KEY, raw);
+  deskCache = { raw, desk };
+  window.dispatchEvent(new Event(DESK_EVENT));
+}
+
 export function AnalyzeApp() {
   const params = useSearchParams();
   const reduce = useReducedMotion();
-  const [rows, setRows] = useState<TxnInput[] | null>(null);
+  const sampleOn = params.get("sample") === "1";
+  const desk = useSyncExternalStore(subscribeDesk, deskSnapshot, () => EMPTY_DESK);
+  const [trackedSample, setTrackedSample] = useState(sampleOn);
+  const [rows, setRows] = useState<TxnInput[] | null>(() => (sampleOn ? parseStatement(sampleCsv()).rows : null));
   const [reading, setReading] = useState<AiReading | null>(null);
-  const [fileName, setFileName] = useState("");
-  const [caseRef, setCaseRef] = useState("");
+  const [fileName, setFileName] = useState(() => (sampleOn ? SAMPLE_CASE.fileName : ""));
+  const [caseRef, setCaseRef] = useState(() => (sampleOn ? SAMPLE_CASE.reference : ""));
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [busyFile, setBusyFile] = useState("");
   const [policy, setPolicy] = useState<Policy>(STANDARD_POLICY);
-  const [chart, setChart] = useState<ChartConfig>(DEFAULT_CHART);
-  const [widgets, setWidgets] = useState<WidgetSetting[]>(DEFAULT_WIDGETS);
-  const [booted, setBooted] = useState(false);
 
-  useEffect(() => {
-    const saved = readDesk();
-    if (saved) {
-      setChart(saved.chart);
-      setWidgets(saved.widgets);
-    }
-    if (params.get("sample") === "1") {
+  if (sampleOn !== trackedSample) {
+    setTrackedSample(sampleOn);
+    if (sampleOn) {
       const parsed = parseStatement(sampleCsv());
       setRows(parsed.rows);
       setFileName(SAMPLE_CASE.fileName);
       setCaseRef(SAMPLE_CASE.reference);
+      setReading(null);
       setError(null);
     } else {
       setRows(null);
       setReading(null);
       setFileName("");
     }
-    setBooted(true);
-  }, [params]);
-
-  useEffect(() => {
-    if (!booted) return;
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ chart, widgets } satisfies Desk));
-  }, [booted, chart, widgets]);
+  }
 
   const analysis = useMemo(() => (rows ? analyze(rows, policy, reading) : null), [rows, policy, reading]);
-  const waitingForSample = !booted && params.get("sample") === "1";
 
   function openText(text: string, name: string, reference: string) {
     const parsed = parseStatement(text);
@@ -121,8 +137,6 @@ export function AnalyzeApp() {
           </Link>
         </div>
       </header>
-      {waitingForSample ? <OpeningFile fileName={SAMPLE_CASE.fileName} /> : null}
-      {!waitingForSample ? (
       <AnimatePresence mode="wait">
         {analysis ? (
           <motion.div
@@ -139,10 +153,10 @@ export function AnalyzeApp() {
               onPolicy={setPolicy}
               caseRef={caseRef}
               fileName={fileName}
-              chart={chart}
-              onChart={setChart}
-              widgets={widgets}
-              onWidgets={setWidgets}
+              chart={desk.chart}
+              onChart={(chart) => writeDesk({ chart, widgets: desk.widgets })}
+              widgets={desk.widgets}
+              onWidgets={(widgets) => writeDesk({ chart: desk.chart, widgets })}
               onReset={() => {
                 setRows(null);
                 setReading(null);
@@ -163,7 +177,6 @@ export function AnalyzeApp() {
           </motion.div>
         )}
       </AnimatePresence>
-      ) : null}
     </div>
   );
 }

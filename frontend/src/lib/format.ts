@@ -29,6 +29,24 @@ function trim(n: number) {
   return n.toFixed(digits).replace(/\.0$/, "");
 }
 
+const DATASET_RATE: Record<"A" | "B" | "C" | "D" | "E", [number, number]> = {
+  A: [0.16, 0.21],
+  B: [0.2, 0.26],
+  C: [0.24, 0.32],
+  D: [0.24, 0.32],
+  E: [0.24, 0.32],
+};
+
+export function datasetRate(letter: "A" | "B" | "C" | "D" | "E"): [number, number] {
+  return DATASET_RATE[letter];
+}
+
+export function yearsLabel(months: number) {
+  const years = Math.round((months / 12) * 10) / 10;
+  const text = Number.isInteger(years) ? String(years) : years.toFixed(1);
+  return `${text} ${years === 1 ? "year" : "years"}`;
+}
+
 export function pct(ratio: number, digits = 0) {
   if (!Number.isFinite(ratio)) return "—";
   return `${(ratio * 100).toFixed(digits)}%`;

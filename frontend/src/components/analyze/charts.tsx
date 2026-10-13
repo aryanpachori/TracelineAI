@@ -38,9 +38,13 @@ export function CashflowChart({
     cashAfterOps: Math.round(month.cashAfterOps),
     obligations: Math.round(month.obligations),
     totalIn: Math.round(month.totalIn),
+    totalOut: Math.round(month.totalOut),
   }));
 
   const keys = (Object.keys(config.series) as ChartSeriesKey[]).filter((key) => config.series[key]);
+  const selectedPeak = Math.max(1, ...data.flatMap((row) => keys.map((key) => Math.abs(Number(row[key] ?? 0)))));
+  const flowPeak = Math.max(1, ...data.map((row) => Math.max(row.totalIn, row.totalOut)));
+  const showLedger = flowPeak > 50000 && selectedPeak < flowPeak * 0.08;
   const chart = (
     <>
       <CartesianGrid stroke="#e4edf6" vertical={false} />
@@ -79,6 +83,16 @@ export function CashflowChart({
           />
         ),
       )}
+      {showLedger && config.type !== "bar" && !keys.includes("totalIn") ? (
+        <Area type="monotone" dataKey="totalIn" name="All credits" stroke="#94a3b8" fill="#94a3b8" fillOpacity={0.06} strokeWidth={1.5} />
+      ) : null}
+      {showLedger && config.type !== "bar" ? (
+        <Area type="monotone" dataKey="totalOut" name="All debits" stroke="#e11d48" fill="#e11d48" fillOpacity={0.05} strokeWidth={1.5} />
+      ) : null}
+      {showLedger && config.type === "bar" && !keys.includes("totalIn") ? (
+        <Bar dataKey="totalIn" name="All credits" fill="#94a3b8" maxBarSize={18} />
+      ) : null}
+      {showLedger && config.type === "bar" ? <Bar dataKey="totalOut" name="All debits" fill="#e11d48" maxBarSize={18} /> : null}
     </>
   );
 
@@ -188,7 +202,7 @@ export function SpendMonthChart({
 }) {
   const keys = [...report.chartIds, "rest"];
   const names = new Map(report.spend.map((group) => [group.id, group.name]));
-  names.set("rest", "Other spending");
+  names.set("rest", "Smaller groups");
   const data = report.months.map((month) => {
     const row: Record<string, string | number> = { key: month.key, label: month.label };
     keys.forEach((id) => {

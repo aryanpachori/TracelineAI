@@ -141,6 +141,15 @@ export type Analysis = {
     bandHigh: number;
     basis: string;
   };
+  payability: {
+    mode: "formal" | "cashflow";
+    workIn: number;
+    workAvg: number;
+    spent: number;
+    spentAvg: number;
+    left: number;
+    moved: number;
+  };
   grade: {
     letter: "A" | "B" | "C" | "D" | "E";
     points: number;

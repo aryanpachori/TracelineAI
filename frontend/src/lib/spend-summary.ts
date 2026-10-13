@@ -12,7 +12,7 @@ export type SpendBrief = {
 
 const OPERATING = ["suppliers", "utilities", "tax"];
 const FIXED = ["emi", "rent", "insurance", "subscriptions"];
-const PERSONAL = ["food", "fuel", "healthcare", "shopping", "cash"];
+const PERSONAL = ["food", "fuel", "healthcare", "shopping", "travel", "cards", "people", "shops", "cash"];
 
 export function buildSpendBrief(analysis: Analysis): SpendBrief {
   const spend = analysis.groups.spend;

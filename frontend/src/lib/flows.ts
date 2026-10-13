@@ -1,4 +1,5 @@
 import { inr, pct } from "./format";
+import { groupOf } from "./groups";
 import type {
   Facility,
   FacilityFit,
@@ -37,15 +38,18 @@ export function buildFlows(
   grade: { letter: "A" | "B" | "C" | "D" | "E"; label: string; points: number },
   policy: Policy,
   businessRates?: [number, number],
+  options?: { commitAlreadyInCash?: boolean; receipt?: (txn: Txn) => boolean },
 ): FlowReport {
   const series = detectSeries(txns, months.map((month) => month.key));
   const rails = detectRails(txns);
   const monthPatterns = detectMonthPatterns(txns, months, series);
   const upiIn = rails.find((rail) => rail.rail === "UPI")?.inflow ?? 0;
-  const earnedCredits = txns
-    .filter((txn) => txn.category === "business_in" || txn.category === "salary")
+  const isReceipt = options?.receipt ?? ((txn: Txn) => txn.category === "business_in" || txn.category === "salary");
+  const earnedCredits = txns.filter((txn) => isReceipt(txn)).reduce((sum, txn) => sum + txn.credit, 0);
+  const upiReceipts = txns
+    .filter((txn) => isReceipt(txn) && railOf(txn.description) === "UPI")
     .reduce((sum, txn) => sum + txn.credit, 0);
-  const upiShare = earnedCredits > 0 ? upiBusiness(txns) / earnedCredits : 0;
+  const upiShare = earnedCredits > 0 ? upiReceipts / earnedCredits : 0;
   const extraCommit = series
     .filter((item) => item.kind === "autopay" || item.kind === "subscription")
     .reduce((sum, item) => sum + item.typical, 0);
@@ -59,16 +63,11 @@ export function buildFlows(
     upiIn,
     monthCount: Math.max(metrics.months, 1),
     businessRates,
+    commitAlreadyInCash: options?.commitAlreadyInCash ?? false,
   });
   const reading = writeReading(series, upiShare, extraCommit, facilities, grade);
 
   return { series, rails, months: monthPatterns, facilities, upiShare, extraCommit, reading };
-}
-
-function upiBusiness(txns: Txn[]) {
-  return txns
-    .filter((txn) => (txn.category === "business_in" || txn.category === "salary") && railOf(txn.description) === "UPI")
-    .reduce((sum, txn) => sum + txn.credit, 0);
 }
 
 function explicitKind(txn: Txn): SeriesKind | null {
@@ -77,7 +76,7 @@ function explicitKind(txn: Txn): SeriesKind | null {
   if (/netflix|spotify|hotstar|disney|youtube|google workspace|google one|adobe|microsoft|linkedin|notion|slack|prime video|subscription/.test(text)) {
     return "subscription";
   }
-  if (/nach|ecs|ach|autopay|e-mandate|emandate|mandate|standing instruction/.test(text)) {
+  if (/\b(nach|ecs)\b|\bach[\s/-]|autopay|e-mandate|emandate|\bmandate|standing instruction/.test(text)) {
     return "autopay";
   }
   if (txn.category === "rent") return "standing";
@@ -107,8 +106,17 @@ function detectSeries(txns: Txn[], monthKeys: string[]): RecurringSeries[] {
       const seen = new Set(cluster.map((txn) => txn.date.slice(0, 7)));
       const variation = typical > 0 ? stdev(amounts) / typical : 0;
       const explicit = kind === "emi" || kind === "autopay" || kind === "subscription" || kind === "standing";
-      const repeat = !explicit && seen.size >= 4 && variation <= 0.08 && typical <= 8000 && cluster.every((txn) => txn.category !== "supplier");
-      const resolved: SeriesKind | null = explicit ? kind : repeat ? "repeat" : null;
+      const habit = cluster.some((txn) => HABIT.has(groupOf(txn).id));
+      const dated = daysStable(cluster);
+      const repeat =
+        !explicit &&
+        !habit &&
+        dated &&
+        seen.size >= 4 &&
+        variation <= 0.08 &&
+        typical <= 8000 &&
+        cluster.every((txn) => txn.category !== "supplier" && txn.category !== "transfer_out" && txn.category !== "personal");
+      const resolved: SeriesKind | null = explicit && (kind !== "autopay" || dated || seen.size < 3) ? kind : repeat ? "repeat" : null;
       if (!resolved) return;
       if (seen.size < 2) return;
       if (!explicit && seen.size < 4) return;
@@ -156,6 +164,15 @@ function pickKind(kinds: SeriesKind[]): SeriesKind | null {
   if (kinds.includes("subscription")) return "subscription";
   if (kinds.includes("standing")) return "standing";
   return null;
+}
+
+const HABIT = new Set(["food", "fuel", "shopping", "travel", "healthcare"]);
+
+function daysStable(rows: Txn[]) {
+  const days = rows.map((txn) => Number(txn.date.slice(8, 10))).filter((day) => day > 0);
+  if (days.length < 2) return true;
+  const mid = median(days);
+  return days.every((day) => Math.min(Math.abs(day - mid), 31 - Math.abs(day - mid)) <= 3);
 }
 
 function clusterByAmount(rows: Txn[]): Txn[][] {
@@ -221,13 +238,20 @@ function buildFacilities(input: {
   upiIn: number;
   monthCount: number;
   businessRates?: [number, number];
+  commitAlreadyInCash?: boolean;
 }): Facility[] {
-  const room = Math.max(0, input.metrics.medianCashAfterOps - input.extraCommit);
+  const room = Math.max(0, input.metrics.medianCashAfterOps - (input.commitAlreadyInCash ? 0 : input.extraCommit));
   const monthly = room * input.policy.surplusShare;
   const rates =
     input.businessRates ??
     rateBand(input.grade.letter, input.metrics.bounces6m, input.policy.maxBounces6m, input.metrics.volatility);
-  const fit = facilityFit(input.grade.letter, input.metrics.bounces6m > input.policy.maxBounces6m, monthly);
+  const fit = input.commitAlreadyInCash
+    ? monthly <= 0
+      ? "weak"
+      : input.grade.letter === "A" || input.grade.letter === "B"
+        ? "strong"
+        : "conditional"
+    : facilityFit(input.grade.letter, input.metrics.bounces6m > input.policy.maxBounces6m, monthly);
   const business = amountBand(monthly, rates, input.policy.tenureMonths);
   const lineRates: [number, number] = [Math.min(rates[0] + 0.02, 0.3), Math.min(rates[1] + 0.02, 0.34)];
   const line = amountBand(monthly * 0.7, lineRates, 12);
@@ -261,7 +285,9 @@ function buildFacilities(input: {
       rateHigh: rates[1],
       tenure: `${input.policy.tenureMonths} months`,
       why: businessWhy,
-      reading: `AI sized this from cash left of ${inr(input.metrics.medianCashAfterOps, 0)}, after ${inr(input.extraCommit, 0)} of autopays and subscriptions. At ${pct(rates[0])} to ${pct(rates[1])}, the facility is ${inr(business.low, 0)} to ${inr(business.high, 0)} over ${input.policy.tenureMonths} months.`,
+      reading: input.commitAlreadyInCash
+        ? `Sized from ${inr(input.metrics.medianCashAfterOps, 0)} left in a typical month after own-account transfers and after spending already on the statement. At ${pct(rates[0])} to ${pct(rates[1])}, the facility is ${inr(business.low, 0)} to ${inr(business.high, 0)} over ${input.policy.tenureMonths} months.`
+        : `AI sized this from cash left of ${inr(input.metrics.medianCashAfterOps, 0)}, after ${inr(input.extraCommit, 0)} of autopays and subscriptions. At ${pct(rates[0])} to ${pct(rates[1])}, the facility is ${inr(business.low, 0)} to ${inr(business.high, 0)} over ${input.policy.tenureMonths} months.`,
     },
     {
       id: "line",

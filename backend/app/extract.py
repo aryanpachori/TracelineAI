@@ -588,8 +588,8 @@ async def extract_rows(text: str) -> list[dict]:
         note(f"read {len(local)} rows from the statement layout")
         for row in local:
             apply_narration_model(row)
-        local.sort(key=lambda row: row["date"])
-        return local
+        await classify_open(local)
+        return finish_rows(local)
     parts = chunks(text, CHUNK_SIZE)
     workers = min(WORKERS, len(parts)) or 1
     note(f"statement sections {len(parts)} at once")
@@ -615,8 +615,8 @@ async def extract_rows(text: str) -> list[dict]:
             rows.append(row)
     if not rows:
         raise ValueError("No transactions could be read from this file.")
-    rows.sort(key=lambda row: row["date"])
-    return rows
+    await classify_open(rows)
+    return finish_rows(rows)
 
 
 async def read_part(client: httpx.AsyncClient, part: str) -> list[dict]:
@@ -676,38 +676,139 @@ def split_at(part: str) -> int:
     return mid
 
 
+RISKY = {"business_in", "salary", "supplier"}
+PERSON_HANDLE = re.compile(r"@(?:ok\w*|ybl|axl|ibl|pty|ptsbi|ptaxis|pthdfc|upi|y)\b", re.I)
+MERCHANT_HINTS = re.compile(
+    r"swiggy|zomato|zepto|blinkit|dominos|bigbasket|amazon|flipkart|netflix|spotify|youtube|irctc|paytmqr|phonepe|\bcred\b",
+    re.I,
+)
+CLASSIFY_SYSTEM = """You label Indian bank-statement narrations. Return JSON only: {"labels":[{"i":0,"category":"personal"}]}.
+Categories: business_in, salary, transfer_in, loan_in, self_in, cash_in, emi, rent, supplier, utilities, tax, bounce_reversal, bounce_charge, cash_out, personal, self_out, transfer_out, other_in, other_out.
+Person-to-person UPI, IMPS, or NEFT is transfer_in or transfer_out, never business_in or supplier.
+A shop, food app, travel app, subscription, or card spend is personal.
+Salary is payroll from an employer. A broker, mutual fund, reimbursement, or investment is other_in or other_out, not salary.
+Loan EMI is emi. Electricity, mobile, and broadband are utilities. Stock or mill purchase is supplier.
+If the line is unclear, use other_in or other_out. Do not invent a business receipt.
+"""
+
+
+def finish_rows(rows: list[dict]) -> list[dict]:
+    for row in rows:
+        row.pop("_open", None)
+        row.pop("_guess", None)
+    rows.sort(key=lambda row: row["date"])
+    return rows
+
+
 def apply_narration_model(row: dict) -> None:
+    structural = structural_category(row)
+    if structural:
+        row["category"] = structural
+        return
     guess = predict_category(row["description"], row["debit"], row["credit"])
     if guess is not None:
         category, confidence = guess
-        if confidence >= TRUST:
+        if confidence >= TRUST and category not in RISKY:
             row["category"] = category
             return
-        learn_from_teacher(row["description"], row["category"], row["debit"], row["credit"], confidence)
-    fallback = keyword_category(row)
-    if fallback:
-        row["category"] = fallback
+        if confidence >= TRUST:
+            row["_guess"] = category
+    row["_open"] = True
 
 
-def keyword_category(row: dict) -> str | None:
+def structural_category(row: dict) -> str | None:
     text = row["description"].lower()
+    compact = re.sub(r"\s+", "", text)
     credit = row["credit"]
     debit = row["debit"]
-    if "int.pd" in text:
+    if "int.pd" in compact or "interestpaid" in compact:
         return "other_in" if credit else "other_out"
-    if "cashdep chgs" in text or "chgs" in text and debit and debit < 1000:
+    if debit and debit < 5000 and any(token in compact for token in ("chrgs", "chgs", "charges")):
         return "bounce_charge"
-    if debit and any(name in text for name in ("swiggy", "zomato", "zepto", "blinkit", "dominos", "bigbasket")):
-        return "personal"
-    if debit and ("upi/" in text or "paid via" in text):
-        return "personal"
-    if credit and "fund transferinf" in text.replace(" ", ""):
-        return "salary"
-    if credit and "upi/" in text:
-        return "transfer_in"
-    if credit and ("by cash" in text or "cash dep" in text):
+    if credit and any(token in text for token in ("by cash", "cash dep", "self cash", "sak/cash dep")):
         return "cash_in"
+    if debit and any(token in text for token in ("atm", "cash wdl", "cwdr")):
+        return "cash_out"
+    if any(token in compact for token in ("refund", "cradj", "ordercan", "cashback", "rfnd")):
+        return "other_in" if credit else "other_out"
+    if any(token in text for token in ("zerodha", "groww", "upstox", "nse clearing", "bse limited", "mfss")):
+        return "other_in" if credit else "other_out"
+    if "wise payment" in text:
+        return "transfer_in" if credit else "transfer_out"
+    if any(token in compact for token in ("upi/p2a", "imps/p2a", "upi/p2p", "imps/p2p")):
+        return "transfer_in" if credit else "transfer_out"
+    if "imps/" in compact and not any(token in text for token in ("pvt", "ltd", "limited", "mill", "industries", "purchase", "supplier")):
+        return "transfer_in" if credit else "transfer_out"
+    if credit and re.search(r"\bcred\b", text):
+        return "other_in"
+    if debit and "upi/p2m" in compact:
+        return "personal"
+    if debit and MERCHANT_HINTS.search(text):
+        return "personal"
+    if ("upi/" in text or "upi/" in compact) and PERSON_HANDLE.search(text) and not MERCHANT_HINTS.search(text):
+        return "transfer_in" if credit else "transfer_out"
+    if debit and ("upi/" in text or "upi/" in compact or "paid via" in text or text.startswith("pos") or text.startswith("ecom")):
+        return "personal"
+    if credit and "fundtransferinf" in compact:
+        return "salary"
+    if debit and re.search(r"\bemi\b", text):
+        return "emi"
+    if debit and re.search(r"\brent\b", text):
+        return "rent"
+    if debit and any(token in compact for token in ("pymt-card", "pymtcard", "creditcard")):
+        return "personal"
     return None
+
+
+async def classify_open(rows: list[dict]) -> None:
+    pending = [row for row in rows if row.get("_open")]
+    if not pending:
+        return
+    grouped: dict[tuple[str, str], list[dict]] = {}
+    for row in pending:
+        key = ("credit" if row["credit"] else "debit", row["description"].strip().lower()[:180])
+        grouped.setdefault(key, []).append(row)
+    ranked = sorted(
+        grouped.items(),
+        key=lambda item: sum(row["credit"] or row["debit"] for row in item[1]),
+        reverse=True,
+    )[:120]
+    items = [
+        {"i": index, "side": key[0], "narration": key[1]}
+        for index, (key, _) in enumerate(ranked)
+    ]
+    labelled: dict[int, str] = {}
+    try:
+        async with httpx.AsyncClient(timeout=90) as client:
+            for start in range(0, len(items), 24):
+                chunk = items[start:start + 24]
+                data = await complete_async(
+                    client,
+                    CLASSIFY_SYSTEM,
+                    "Label each narration:\n" + json.dumps({"rows": chunk}),
+                )
+                for item in data.get("labels") or []:
+                    if not isinstance(item, dict):
+                        continue
+                    category = str(item.get("category") or "")
+                    try:
+                        index = int(item.get("i"))
+                    except (TypeError, ValueError):
+                        continue
+                    if category in CATEGORIES:
+                        labelled[index] = category
+    except (RuntimeError, ValueError, httpx.HTTPError, KeyError, TypeError) as error:
+        note(f"unlabelled rows kept: {error}")
+    applied = 0
+    for index, (_key, group) in enumerate(ranked):
+        category = labelled.get(index) or group[0].get("_guess")
+        if not category:
+            continue
+        for row in group:
+            row["category"] = category
+        if index in labelled:
+            applied += len(group)
+    note(f"model labelled {applied} rows the rules left open")
 
 
 def chunks(text: str, size: int = CHUNK_SIZE) -> list[str]:

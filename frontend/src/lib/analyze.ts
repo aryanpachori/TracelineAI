@@ -1,11 +1,12 @@
 import { categorize, counterparty } from "./categorize";
 import { buildFlows } from "./flows";
-import { buildGroups } from "./groups";
-import { monthKey, monthLabel, prettyDate } from "./format";
+import { buildGroups, groupOf } from "./groups";
+import { datasetRate, inr, monthKey, monthLabel, prettyDate, yearsLabel } from "./format";
 import type {
   AiReading,
   Analysis,
   Category,
+  FlowReport,
   IntegrityCheck,
   MonthPoint,
   Policy,
@@ -42,22 +43,56 @@ const EARNED: Category[] = ["business_in", "salary"];
 
 export function analyze(inputs: TxnInput[], policy: Policy, reading?: AiReading | null): Analysis {
   const txns = tag(inputs);
-  const months = buildMonths(txns);
-  const metrics = buildMetrics(txns, months);
+  const built = buildMonths(txns);
+  const cash = buildCashflow(txns, built, policy);
+  const months =
+    cash.mode === "cashflow"
+      ? built.map((month) => {
+          const row = cash.byMonth.get(month.key) ?? { work: 0, spent: 0 };
+          const left = row.work - row.spent;
+          return { ...month, earned: row.work, cashAfterOps: left, surplusAfterObligations: left };
+        })
+      : built;
+  const base = buildMetrics(txns, months);
+  const metrics =
+    cash.mode === "cashflow"
+      ? { ...base, topShare: cash.topShare, topName: cash.topName, nonEarnedShare: cash.asideShare }
+      : base;
   const integrity = buildIntegrity(txns, metrics.months, policy.minMonths);
-  const grade = applyReading(score(metrics, integrity, policy), reading);
-  const reasons = buildReasons(txns, months, metrics, policy, grade);
-  const counterparties = buildCounterparties(txns);
+  const local = score(metrics, integrity, policy);
+  const grade = cash.mode === "cashflow" ? local : applyReading(local, reading);
+  const counterparties = cash.mode === "cashflow" ? cash.payers : buildCounterparties(txns);
   const outflowMix = buildOutflows(months);
   const uncategorizedShare = shareOf(
     txns.filter((txn) => txn.category === "other_in" || txn.category === "other_out"),
     txns,
   );
+  const payability = {
+    mode: cash.mode,
+    workIn: cash.workIn,
+    workAvg: cash.workAvg,
+    spent: cash.spent,
+    spentAvg: cash.spentAvg,
+    left: cash.left,
+    moved: cash.moved,
+  };
 
-  const flows = buildFlows(txns, months, metrics, grade, policy, reading?.rates.business);
+  const flows = buildFlows(
+    txns,
+    months,
+    metrics,
+    grade,
+    policy,
+    cash.mode === "cashflow" ? undefined : reading?.rates.business,
+    cash.mode === "cashflow" ? { commitAlreadyInCash: true, receipt: (txn) => cash.workIds.has(txn.id) } : undefined,
+  );
   const groups = buildGroups(txns, months);
-  const capacity = buildCapacity(metrics, policy, flows.extraCommit);
-  const summary = reading?.summary || writeSummary(metrics, capacity, grade, policy, flows);
+  const reasons = buildReasons(txns, months, metrics, policy, integrity, flows, payability);
+  const capacity = buildCapacity(metrics, policy, flows.extraCommit, cash.mode === "cashflow");
+  const summary =
+    cash.mode === "cashflow" || !reading?.summary
+      ? writeSummary(metrics, capacity, grade, policy, payability)
+      : reading.summary;
 
   return {
     txns,
@@ -69,6 +104,7 @@ export function analyze(inputs: TxnInput[], policy: Policy, reading?: AiReading 
     end: txns[txns.length - 1]?.date ?? "",
     metrics,
     capacity,
+    payability,
     grade,
     reasons,
     integrity,
@@ -276,18 +312,171 @@ function buildMetrics(txns: Txn[], months: MonthPoint[]) {
   };
 }
 
-function buildCapacity(metrics: Analysis["metrics"], policy: Policy, extraCommit: number) {
-  const room = Math.max(0, metrics.medianCashAfterOps - extraCommit);
+const SWEEP_DEBITS = new Set<Category>(["transfer_out", "self_out", "cash_out"]);
+const INVEST = /zerodha|groww|upstox|nse clearing|bse limited|mutual fund|\bmfss\b|nseclg/i;
+const INTEREST = /\bint\.?\s*pd\b|interest paid|interest credit/i;
+
+type Cashflow = {
+  mode: "formal" | "cashflow";
+  workIn: number;
+  workAvg: number;
+  spent: number;
+  spentAvg: number;
+  left: number;
+  moved: number;
+  topName: string;
+  topShare: number;
+  asideShare: number;
+  payers: Analysis["counterparties"];
+  workIds: Set<string>;
+  byMonth: Map<string, { work: number; spent: number }>;
+};
+
+function buildCashflow(txns: Txn[], months: MonthPoint[], policy: Policy): Cashflow {
+  const formalAvg = mean(months.map((month) => month.earned));
+  const mode: Cashflow["mode"] = formalAvg >= policy.minAvgInflow * 0.5 ? "formal" : "cashflow";
+  const internal = markInternal(txns);
+  const workIds = new Set<string>();
+  const byMonth = new Map<string, { work: number; spent: number }>();
+  months.forEach((month) => byMonth.set(month.key, { work: 0, spent: 0 }));
+  txns.forEach((txn) => {
+    const slot = byMonth.get(monthKey(txn.date));
+    if (!slot) return;
+    if (isWork(txn, internal)) {
+      workIds.add(txn.id);
+      slot.work += txn.credit;
+    }
+    if (isSpend(txn, internal)) slot.spent += txn.debit;
+  });
+  const rows = [...byMonth.values()];
+  const payers = payersFrom(txns, workIds);
+  const totalCredits = txns.reduce((total, txn) => total + txn.credit, 0);
+  const moved = txns.reduce((total, txn) => total + (internal.has(txn.id) && txn.credit > 0 ? txn.credit : 0), 0);
+  return {
+    mode,
+    workIn: median(rows.map((row) => row.work)),
+    workAvg: mean(rows.map((row) => row.work)),
+    spent: median(rows.map((row) => row.spent)),
+    spentAvg: mean(rows.map((row) => row.spent)),
+    left: median(rows.map((row) => row.work - row.spent)),
+    moved,
+    topName: payers[0]?.name ?? "—",
+    topShare: payers[0]?.share ?? 0,
+    asideShare: totalCredits > 0 ? moved / totalCredits : 0,
+    payers: payers.slice(0, 6),
+    workIds,
+    byMonth,
+  };
+}
+
+function markInternal(txns: Txn[]) {
+  const internal = new Set<string>();
+  txns.forEach((txn) => {
+    if (txn.category === "self_in" || txn.category === "self_out") internal.add(txn.id);
+  });
+  const used = new Set<string>();
+  const credits = txns
+    .filter((txn) => txn.credit >= 2000 && !internal.has(txn.id))
+    .sort((a, b) => b.credit - a.credit);
+  for (const credit of credits) {
+    const day = dayStamp(credit.date);
+    let best: Txn | null = null;
+    let bestDiff = Infinity;
+    for (const debit of txns) {
+      if (debit.debit < 2000 || used.has(debit.id) || internal.has(debit.id)) continue;
+      if (!SWEEP_DEBITS.has(debit.category)) continue;
+      if (Math.abs(dayStamp(debit.date) - day) > 3) continue;
+      const diff = Math.abs(credit.credit - debit.debit);
+      if (diff <= Math.max(80, credit.credit * 0.02) && diff < bestDiff) {
+        best = debit;
+        bestDiff = diff;
+      }
+    }
+    if (!best) continue;
+    internal.add(credit.id);
+    internal.add(best.id);
+    used.add(best.id);
+  }
+  const holders = new Set<string>();
+  txns.forEach((txn) => {
+    if (!internal.has(txn.id) || txn.credit <= 0) return;
+    const key = nameKey(txn.counterparty);
+    if (key.length >= 5) holders.add(key);
+  });
+  txns.forEach((txn) => {
+    if (txn.credit <= 0 || internal.has(txn.id)) return;
+    const key = nameKey(txn.counterparty);
+    if (key.length < 5) return;
+    for (const holder of holders) {
+      const shorter = Math.min(holder.length, key.length);
+      if (holder === key || (shorter >= 6 && (holder.startsWith(key) || key.startsWith(holder)))) {
+        internal.add(txn.id);
+        break;
+      }
+    }
+  });
+  return internal;
+}
+
+function isWork(txn: Txn, internal: Set<string>) {
+  if (txn.credit <= 0 || internal.has(txn.id)) return false;
+  if (txn.category === "loan_in" || txn.category === "self_in" || txn.category === "bounce_reversal" || txn.category === "other_in") {
+    return false;
+  }
+  const group = groupOf(txn).id;
+  if (group === "investments_in" || group === "interest") return false;
+  if (INVEST.test(txn.description) || INTEREST.test(txn.description)) return false;
+  return txn.category === "business_in" || txn.category === "salary" || txn.category === "transfer_in" || txn.category === "cash_in";
+}
+
+function isSpend(txn: Txn, internal: Set<string>) {
+  if (txn.debit <= 0 || internal.has(txn.id)) return false;
+  if (txn.category === "self_out" || txn.category === "bounce_reversal") return false;
+  return true;
+}
+
+function payersFrom(txns: Txn[], workIds: Set<string>) {
+  const map = new Map<string, { amount: number; count: number }>();
+  txns.forEach((txn) => {
+    if (!workIds.has(txn.id)) return;
+    const current = map.get(txn.counterparty) ?? { amount: 0, count: 0 };
+    current.amount += txn.credit;
+    current.count += 1;
+    map.set(txn.counterparty, current);
+  });
+  const gross = [...map.values()].reduce((total, value) => total + value.amount, 0);
+  return [...map.entries()]
+    .map(([name, value]) => ({
+      name,
+      amount: value.amount,
+      count: value.count,
+      share: gross > 0 ? value.amount / gross : 0,
+    }))
+    .sort((a, b) => b.amount - a.amount);
+}
+
+function nameKey(name: string) {
+  return name.toLowerCase().replace(/[^a-z]/g, "");
+}
+
+function dayStamp(iso: string) {
+  const time = Date.parse(iso);
+  return Number.isNaN(time) ? 0 : Math.floor(time / 86_400_000);
+}
+
+function buildCapacity(metrics: Analysis["metrics"], policy: Policy, extraCommit: number, cashflow = false) {
+  const room = Math.max(0, metrics.medianCashAfterOps - (cashflow ? 0 : extraCommit));
   const monthly = room * policy.surplusShare;
   const principal = principalFromEmi(monthly, policy.annualRate, policy.tenureMonths);
-  const viable = room > 0 && metrics.avgEarned >= policy.minAvgInflow * 0.5;
+  const viable = room > 0 && (cashflow || metrics.avgEarned >= policy.minAvgInflow * 0.5);
   return {
     monthly: viable ? monthly : 0,
     principal: viable ? principal : 0,
     bandLow: viable ? principal * 0.75 : 0,
     bandHigh: viable ? principal : 0,
-    basis:
-      "Capacity is a share of cash left after EMI, rent, suppliers, utilities, tax, and return charges, with autopays and subscriptions taken off. The band is the loan that payment would carry at the rate and tenure below.",
+    basis: cashflow
+      ? "There is no salary on this file. The EMI is a share of the cash left in a typical month after own-account transfers are removed and after the spending already on the statement."
+      : "Capacity is a share of cash left after EMI, rent, suppliers, utilities, tax, and return charges, with autopays and subscriptions taken off. The band is the loan that payment would carry at the rate and tenure below.",
   };
 }
 
@@ -421,15 +610,101 @@ function labelFor(points: number) {
   return "Thin";
 }
 
+const DISCRETIONARY = new Set(["food", "shopping", "travel", "subscriptions", "shops", "fuel", "cards", "people", "cash", "healthcare", "other"]);
+
+function pushSpendFlags(reasons: Reason[], txns: Txn[]) {
+  const keys = closedMonthKeys(txns);
+  if (keys.length < 2) return;
+  const byMonth = new Map<string, Map<string, { name: string; amount: number; ids: string[] }>>();
+  txns.forEach((txn) => {
+    if (txn.debit <= 0) return;
+    const group = groupOf(txn);
+    if (group.side !== "out" || !DISCRETIONARY.has(group.id)) return;
+    const key = monthKey(txn.date);
+    const month = byMonth.get(key) ?? new Map();
+    const current = month.get(group.id) ?? { name: group.name, amount: 0, ids: [] as string[] };
+    current.amount += txn.debit;
+    current.ids.push(txn.id);
+    month.set(group.id, current);
+    byMonth.set(key, month);
+  });
+
+  const last = byMonth.get(keys[keys.length - 1]) ?? new Map();
+  const prev = byMonth.get(keys[keys.length - 2]) ?? new Map();
+  let jump: { name: string; delta: number; change: number; ids: string[] } | null = null;
+  last.forEach((row, id) => {
+    const before = prev.get(id)?.amount ?? 0;
+    const delta = row.amount - before;
+    if (before <= 0 || delta < 5000 || delta / before < 0.2) return;
+    if (!jump || delta > jump.delta) jump = { name: row.name, delta, change: delta / before, ids: row.ids };
+  });
+  if (jump) {
+    const amounts = txns.filter((txn) => jump?.ids.includes(txn.id)).map((txn) => txn.debit);
+    const peak = amounts.length ? Math.max(...amounts) : 0;
+    const monthTotal = amounts.reduce((sum, amount) => sum + amount, 0);
+    const oneOff = monthTotal > 0 && peak >= monthTotal * 0.7;
+    reasons.push({
+      code: "SPEND_JUMP",
+      severity: oneOff ? "info" : "watch",
+      title: oneOff ? `${jump.name} spiked on one payment` : `${jump.name} jumped against the prior month`,
+      detail: oneOff
+        ? `${jump.name} was ${inr(jump.delta, 0)} higher than the month before, and one payment is most of that month.`
+        : `${jump.name} was ${Math.round(jump.change * 100)}% higher than the month before, up ${inr(jump.delta, 0)}.`,
+      txnIds: jump.ids,
+    });
+  }
+
+  if (keys.length < 6) return;
+  const total = (list: string[]) =>
+    list.reduce((sum, key) => {
+      const month = byMonth.get(key);
+      if (!month) return sum;
+      return sum + [...month.values()].reduce((inner, row) => inner + row.amount, 0);
+    }, 0);
+  const recentAvg = total(keys.slice(-3)) / 3;
+  const priorAvg = total(keys.slice(-6, -3)) / 3;
+  if (priorAvg >= 2000 && recentAvg - priorAvg >= 2000 && (recentAvg - priorAvg) / priorAvg >= 0.15) {
+    const recent = new Set(keys.slice(-3));
+    reasons.push({
+      code: "SPEND_CREEP",
+      severity: "watch",
+      title: "Day-to-day spending has drifted up",
+      detail: `Food, shopping, travel, fuel, and similar spends average ${inr(recentAvg, 0)} over the last three months, ${Math.round(((recentAvg - priorAvg) / priorAvg) * 100)}% above the three months before that.`,
+      txnIds: txns.filter((txn) => recent.has(monthKey(txn.date)) && txn.debit > 0 && DISCRETIONARY.has(groupOf(txn).id)).map((txn) => txn.id),
+    });
+  }
+}
+
+function closedMonthKeys(txns: Txn[]) {
+  const keys = [...new Set(txns.map((txn) => monthKey(txn.date)))].sort();
+  if (keys.length < 3) return keys;
+  const last = keys[keys.length - 1];
+  const maxDay = Math.max(...txns.filter((txn) => monthKey(txn.date) === last).map((txn) => Number(txn.date.slice(8, 10))));
+  return maxDay < 24 ? keys.slice(0, -1) : keys;
+}
+
 function buildReasons(
   txns: Txn[],
   months: MonthPoint[],
   metrics: Analysis["metrics"],
   policy: Policy,
-  grade: Analysis["grade"],
+  integrity: IntegrityCheck[],
+  flows: FlowReport,
+  payability: Analysis["payability"],
 ): Reason[] {
   const reasons: Reason[] = [];
+  const cashflow = payability.mode === "cashflow";
   const ids = (...categories: Category[]) => txns.filter((txn) => categories.includes(txn.category)).map((txn) => txn.id);
+
+  if (cashflow) {
+    reasons.push({
+      code: "CASHFLOW",
+      severity: "info",
+      title: "Repayment is sized from the cash that stays",
+      detail: `No salary on this file. Customers, cash, and transfers that stay average ${inr(payability.workAvg, 0)} a month. The middle month brings in ${inr(payability.workIn, 0)} and ${inr(payability.spent, 0)} goes out, so the EMI follows that quieter month. ${inr(payability.moved, 0)} moved between their own accounts and is left out of both sides.`,
+      txnIds: [],
+    });
+  }
 
   if (metrics.bounces6m > policy.maxBounces6m) {
     reasons.push({
@@ -467,12 +742,12 @@ function buildReasons(
       detail: `${metrics.topName} is ${Math.round(metrics.topShare * 100)}% of earned inflow. The cap is ${Math.round(policy.maxConcentration * 100)}%.`,
       txnIds: txns.filter((txn) => txn.counterparty === metrics.topName && EARNED.includes(txn.category)).map((txn) => txn.id),
     });
-  } else if (metrics.topShare >= 0.35) {
+  } else if (metrics.topShare >= 0.25 && metrics.avgEarned > 0) {
     reasons.push({
       code: "CONCENTRATION_NOTE",
-      severity: "info",
-      title: "One payer is material",
-      detail: `${metrics.topName} is ${Math.round(metrics.topShare * 100)}% of earned inflow, still inside the ${Math.round(policy.maxConcentration * 100)}% cap.`,
+      severity: "watch",
+      title: "One payer is a large share of receipts",
+      detail: `${metrics.topName} is ${Math.round(metrics.topShare * 100)}% of earned inflow. A single payer above 25% is a concentration risk, even inside the ${Math.round(policy.maxConcentration * 100)}% cap.`,
       txnIds: txns.filter((txn) => txn.counterparty === metrics.topName && EARNED.includes(txn.category)).map((txn) => txn.id),
     });
   }
@@ -507,7 +782,7 @@ function buildReasons(
       txnIds: ids("loan_in"),
     });
   }
-  if (txns.some((txn) => txn.category === "self_in" || txn.category === "transfer_in")) {
+  if (!cashflow && txns.some((txn) => txn.category === "self_in" || txn.category === "transfer_in")) {
     reasons.push({
       code: "TRANSFER_EXCLUDED",
       severity: "info",
@@ -516,12 +791,17 @@ function buildReasons(
       txnIds: ids("self_in", "transfer_in"),
     });
   }
-  if (txns.some((txn) => txn.category === "cash_in")) {
+  const cashIn = txns.filter((txn) => txn.category === "cash_in").reduce((sum, txn) => sum + txn.credit, 0);
+  if (!cashflow && cashIn > 0 && metrics.totalCredits > 0) {
+    const cashShare = cashIn / metrics.totalCredits;
     reasons.push({
       code: "CASH_EXCLUDED",
-      severity: "info",
-      title: "Cash deposits are excluded",
-      detail: "Branch cash deposits are visible and kept out of earned inflow.",
+      severity: cashShare >= 0.25 ? "watch" : "info",
+      title: cashShare >= 0.25 ? "Cash deposits are a large share of credits" : "Cash deposits are excluded",
+      detail:
+        cashShare >= 0.25
+          ? `${inr(cashIn, 0)} of cash deposits is ${Math.round(cashShare * 100)}% of all credits. Branch cash stays out of earned inflow.`
+          : "Branch cash deposits are visible and kept out of earned inflow.",
       txnIds: ids("cash_in"),
     });
   }
@@ -529,8 +809,10 @@ function buildReasons(
     reasons.push({
       code: "NO_SURPLUS",
       severity: "breach",
-      title: "No cash left after operations",
-      detail: "The median month does not cover EMI, rent and operating costs. The indicative band is zero.",
+      title: cashflow ? "A typical month does not leave cash" : "No cash left after operations",
+      detail: cashflow
+        ? "After own-account transfers are removed, a typical month spends what comes in. A new EMI is ₹0."
+        : "The median month does not cover EMI, rent and operating costs. The indicative band is zero.",
       txnIds: [],
     });
   }
@@ -546,9 +828,11 @@ function buildReasons(
   if (metrics.avgEarned < policy.minAvgInflow) {
     reasons.push({
       code: "INFLOW_FLOOR",
-      severity: "breach",
-      title: "Earned inflow is under the floor",
-      detail: "Average earned inflow is below the minimum for this file.",
+      severity: cashflow ? "watch" : "breach",
+      title: cashflow ? "Work receipts sit under the usual floor" : "Earned inflow is under the floor",
+      detail: cashflow
+        ? "There is no salary. The EMI follows the cash left after spending, and that cash is below the usual inflow minimum."
+        : "Average earned inflow is below the minimum for this file.",
       txnIds: [],
     });
   }
@@ -565,11 +849,89 @@ function buildReasons(
     reasons.push({
       code: "NON_EARNED",
       severity: "watch",
-      title: "A large share of credits is not business income",
-      detail: `${Math.round(metrics.nonEarnedShare * 100)}% of credits are loans, transfers, cash deposits or other non-receipts.`,
-      txnIds: ids("loan_in", "self_in", "transfer_in", "cash_in", "other_in"),
+      title: cashflow ? "A large share of credits moves between their own accounts" : "A large share of credits is not business income",
+      detail: cashflow
+        ? `${Math.round(metrics.nonEarnedShare * 100)}% of credits are paired with a matching payment out within a few days, so they are not takings.`
+        : `${Math.round(metrics.nonEarnedShare * 100)}% of credits are loans, transfers, cash deposits or other non-receipts.`,
+      txnIds: cashflow ? [] : ids("loan_in", "self_in", "transfer_in", "cash_in", "other_in"),
     });
   }
+
+  const balance = integrity.find((item) => item.id === "balance");
+  if (balance?.status === "fail") {
+    reasons.push({
+      code: "BALANCE_BREAK",
+      severity: "breach",
+      title: "The running balance does not tie",
+      detail: balance.detail,
+      txnIds: [],
+    });
+  }
+
+  const totalOut = months.reduce((sum, month) => sum + month.totalOut, 0);
+  const avgOut = months.length ? totalOut / months.length : 0;
+  const avgIn = months.length ? metrics.totalCredits / months.length : 0;
+  if (avgOut > avgIn * 1.05 && avgOut - avgIn >= 5000) {
+    reasons.push({
+      code: "BURN",
+      severity: "watch",
+      title: "Outflow runs ahead of inflow",
+      detail: `A typical month spends ${inr(avgOut, 0)} and receives ${inr(avgIn, 0)}.`,
+      txnIds: [],
+    });
+  }
+
+  const lastBalance = [...txns].reverse().find((txn) => txn.balance != null)?.balance;
+  const burn = avgOut - avgIn;
+  if (lastBalance != null && burn >= 5000) {
+    const runway = lastBalance / burn;
+    if (runway < 3) {
+      reasons.push({
+        code: "RUNWAY",
+        severity: runway < 1 ? "breach" : "watch",
+        title: runway < 1 ? "Closing balance does not cover a month of burn" : "Cash runway is short",
+        detail: `The last balance is ${inr(lastBalance, 0)}. At the recent gap between outflow and inflow, that is about ${runway.toFixed(1)} months.`,
+        txnIds: [],
+      });
+    }
+  }
+
+  const personIn = txns.filter((txn) => txn.category === "self_in" || txn.category === "transfer_in").reduce((sum, txn) => sum + txn.credit, 0);
+  const personOut = txns.filter((txn) => txn.category === "self_out" || txn.category === "transfer_out").reduce((sum, txn) => sum + txn.debit, 0);
+  if (metrics.totalCredits > 0 && totalOut > 0 && personIn > metrics.totalCredits * 0.35 && personOut > totalOut * 0.25 && personIn >= 50000) {
+    reasons.push({
+      code: "ROUND_TRIP",
+      severity: "watch",
+      title: "A large share is moving between people and own accounts",
+      detail: `${inr(personIn, 0)} came in from people or own accounts, and ${inr(personOut, 0)} went out the same way. Those rows are not treated as customer receipts or supplier payments.`,
+      txnIds: ids("self_in", "transfer_in", "self_out", "transfer_out"),
+    });
+  }
+
+  const subs = flows.series.filter((item) => item.kind === "subscription").reduce((sum, item) => sum + item.typical, 0);
+  if (subs >= 8000 && avgOut > 0 && subs > avgOut * 0.08) {
+    reasons.push({
+      code: "SUBSCRIPTIONS",
+      severity: "watch",
+      title: "Subscriptions are a steady commitment",
+      detail: `Repeating subscriptions add up to ${inr(subs, 0)} in a typical month.`,
+      txnIds: flows.series.filter((item) => item.kind === "subscription").flatMap((item) => item.txnIds),
+    });
+  }
+
+  const otherRows = txns.filter((txn) => txn.category === "other_in" || txn.category === "other_out");
+  const otherShare = txns.length ? otherRows.length / txns.length : 0;
+  if (otherShare > 0.15) {
+    reasons.push({
+      code: "UNGROUPED",
+      severity: "watch",
+      title: "Many rows still sit outside a clear group",
+      detail: `${Math.round(otherShare * 100)}% of rows were not matched to a known vendor, person, or payroll pattern.`,
+      txnIds: otherRows.map((txn) => txn.id),
+    });
+  }
+
+  pushSpendFlags(reasons, txns);
 
   const order = { breach: 0, watch: 1, info: 2 };
   return reasons.sort((a, b) => order[a.severity] - order[b.severity]);
@@ -660,18 +1022,24 @@ function writeSummary(
   capacity: Analysis["capacity"],
   grade: Analysis["grade"],
   policy: Policy,
-  flows: Analysis["flows"],
+  payability?: Analysis["payability"],
 ) {
-  const lead = flows.facilities.find((item) => item.fit === "strong") ?? flows.facilities.find((item) => item.fit === "conditional") ?? flows.facilities[0];
+  if (payability?.mode === "cashflow") {
+    const left = payability.left;
+    const quiet = payability.workAvg > payability.workIn * 1.5 && payability.workAvg - payability.workIn > 5000;
+    return `This account has no salary. Customers, cash, and transfers that stay average ${inrWords(payability.workAvg)} a month. ${
+      quiet ? `The middle month brings in only ${inrWords(payability.workIn)}, and ${inrWords(payability.spent)} goes out, so the EMI follows that quieter month. ` : `${inrWords(payability.spent)} goes out in the middle month. `
+    }${
+      left > 0
+        ? `${inrWords(left)} is left, so a new EMI of ${inrWords(capacity.monthly)} fits.`
+        : "Nothing is left for a new EMI."
+    } ${inrWords(payability.moved)} moved between their own accounts and is left out of both sides.`;
+  }
   const band =
     capacity.principal > 0
-      ? `The working band is ${inrWords(capacity.bandLow)} to ${inrWords(capacity.bandHigh)} over ${policy.tenureMonths} months at ${Math.round(policy.annualRate * 100)}%.`
+      ? `The offer is ${inrWords(capacity.bandLow)} to ${inrWords(capacity.bandHigh)} over ${yearsLabel(policy.tenureMonths)} at ${Math.round(datasetRate(grade.letter)[0] * 100)}–${Math.round(datasetRate(grade.letter)[1] * 100)}%.`
       : "A new facility is not available on these terms.";
-  const option =
-    lead && lead.amountHigh > 0
-      ? `${lead.name} is ${lead.fit === "strong" ? "the leading option" : "the closest option"}, from ${inrWords(lead.amountLow)} to ${inrWords(lead.amountHigh)} at ${Math.round(lead.rateLow * 100)}–${Math.round(lead.rateHigh * 100)}%.`
-      : "A new facility is not a fit on this file.";
-  return `AI graded this file ${grade.letter}, ${grade.label}, readiness ${grade.points}. Cash left after operations is ${inrWords(metrics.medianCashAfterOps)} in a typical month. ${band} ${option}`;
+  return `AI graded this file ${grade.letter}, ${grade.label}, readiness ${grade.points}. Cash left after operations is ${inrWords(metrics.medianCashAfterOps)} in a typical month. ${band}`;
 }
 
 function inrWords(value: number) {

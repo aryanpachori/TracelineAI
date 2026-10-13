@@ -54,7 +54,7 @@ export const WIDGET_META: Record<WidgetId, { title: string; span: string }> = {
   verdict: { title: "Repayment view", span: "lg:col-span-12" },
   kpis: { title: "Averages", span: "lg:col-span-12" },
   spending: { title: "Where the money goes", span: "lg:col-span-12" },
-  facilities: { title: "Credit options", span: "lg:col-span-12" },
+  facilities: { title: "Offer", span: "lg:col-span-12" },
   flows: { title: "Recurring flows", span: "lg:col-span-12" },
   cashflow: { title: "Cash flow", span: "lg:col-span-6" },
   composition: { title: "Credits", span: "lg:col-span-6" },

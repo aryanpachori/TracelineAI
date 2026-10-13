@@ -6,11 +6,12 @@ import { OpenProvider, TrailBar, focusIds, openLabel, openMatch, useOpen } from 
 import { Figure } from "@/components/analyze/figure";
 import { buildCaseFile } from "@/lib/case-file";
 import { SpendSummary } from "@/components/analyze/spend-summary";
-import { downloadText } from "@/components/analyze/upload-panel";
-import { CATEGORY_LABEL, inr, inrBand, inrCompact, pct, prettyDate, signedPct } from "@/lib/format";
+import { downloadCreditFolder } from "@/lib/credit-pack";
+import { partyKind, railLabel } from "@/lib/categorize";
+import { CATEGORY_LABEL, datasetRate, inr, inrBand, inrCompact, pct, prettyDate, signedPct, yearsLabel } from "@/lib/format";
 import { groupName } from "@/lib/groups";
 import { POLICY_PRESETS, SERIES_META, STANDARD_POLICY, WIDGET_META } from "@/lib/policy";
-import type { Analysis, ChartConfig, ChartSeriesKey, FacilityFit, Policy, SeriesKind, WidgetId, WidgetSetting } from "@/lib/types";
+import type { Analysis, ChartConfig, ChartSeriesKey, Policy, SeriesKind, WidgetId, WidgetSetting } from "@/lib/types";
 
 export function Report({
   analysis,
@@ -41,7 +42,7 @@ export function Report({
     verdict: <Verdict analysis={analysis} policy={policy} />,
     kpis: <Averages analysis={analysis} />,
     spending: <Spending analysis={analysis} />,
-    facilities: <Facilities analysis={analysis} />,
+    facilities: <Facilities analysis={analysis} policy={policy} />,
     flows: <Flows analysis={analysis} />,
     cashflow: <Cashflow analysis={analysis} chart={chart} onChart={onChart} />,
     composition: <Credits analysis={analysis} />,
@@ -75,11 +76,8 @@ export function Report({
             className="underline underline-offset-4"
             onClick={() => {
               const file = buildCaseFile(analysis, policy, caseRef, fileName);
-              const name = (caseRef || "case").toLowerCase();
-              downloadText(JSON.stringify(file, null, 2), `${name}-credit-file.json`, "application/json");
-              window.setTimeout(() => {
-                downloadText(file.statement, fileName || `${name}-statement.csv`, "text/csv");
-              }, 400);
+              const name = caseRef || fileName || "credit-file";
+              downloadCreditFolder(name, JSON.stringify(file, null, 2), creditPdfLines(analysis, policy, caseRef, fileName));
             }}
           >
             Download the file
@@ -93,6 +91,8 @@ export function Report({
         AI credit file. {analysis.txns.length} rows read from the statement. Statement coverage{" "}
         {analysis.dataConfidence}, from balance, dates, length, and how completely each narration was grouped.
       </p>
+      <FlowTotals analysis={analysis} />
+      <MoneyFlow analysis={analysis} />
 
       {arrange ? <Arrange widgets={widgets} onWidgets={onWidgets} /> : null}
 
@@ -105,92 +105,133 @@ export function Report({
             </section>
           ))}
       </div>
-      <LoanAsk analysis={analysis} />
       <TrailBar analysis={analysis} />
     </article>
     </OpenProvider>
   );
 }
 
-const FIT_WORD: Record<FacilityFit, string> = {
-  strong: "Strong fit",
-  conditional: "Conditional",
-  weak: "Not available on this file",
-};
+function creditPdfLines(analysis: Analysis, policy: Policy, caseRef: string, fileName: string) {
+  const [rateLow, rateHigh] = datasetRate(analysis.grade.letter);
+  const inflow = analysis.months.reduce((sum, month) => sum + month.totalIn, 0);
+  const outflow = analysis.months.reduce((sum, month) => sum + month.totalOut, 0);
+  const lines = [
+    "Traceline credit file",
+    caseRef || "Untitled case",
+    fileName,
+    analysis.periodLabel,
+    "",
+    `Grade ${analysis.grade.letter}, ${analysis.grade.label}. Readiness ${analysis.grade.points}.`,
+    `New EMI ${inr(analysis.capacity.monthly, 0)} a month.`,
+    `Amount ${inr(analysis.capacity.bandLow, 0)} to ${inr(analysis.capacity.bandHigh, 0)}.`,
+    `Interest ${pct(rateLow)} to ${pct(rateHigh)}. Term ${yearsLabel(policy.tenureMonths)}.`,
+    "",
+    `Inflow ${inr(inflow, 0)}. Outflow ${inr(outflow, 0)}. Net ${inr(inflow - outflow, 0)}.`,
+    "",
+    analysis.summary,
+  ];
+  if (analysis.payability.mode === "cashflow") {
+    lines.push(
+      "",
+      `Cash from work averages ${inr(analysis.payability.workAvg, 0)} a month.`,
+      `Middle month in ${inr(analysis.payability.workIn, 0)}, out ${inr(analysis.payability.spent, 0)}, left ${inr(analysis.payability.left, 0)}.`,
+      `Own-account movement left out: ${inr(analysis.payability.moved, 0)}.`,
+    );
+  }
+  lines.push("", "Notes");
+  analysis.reasons.slice(0, 12).forEach((reason) => {
+    lines.push(`${reason.title}. ${reason.detail}`);
+  });
+  return lines;
+}
 
-function LoanAsk({ analysis }: { analysis: Analysis }) {
-  const [wants, setWants] = useState<boolean | null>(null);
-  const [picked, setPicked] = useState<string | null>(null);
-  const options = analysis.flows.facilities;
-  const chosen = options.find((item) => item.id === picked) ?? null;
-  const indicatedRate = chosen ? (chosen.rateLow + chosen.rateHigh) / 2 : 0;
-  const indicatedAmount = chosen ? (chosen.amountLow + chosen.amountHigh) / 2 : 0;
-
+function FlowTotals({ analysis }: { analysis: Analysis }) {
+  const inflow = analysis.months.reduce((sum, month) => sum + month.totalIn, 0);
+  const outflow = analysis.months.reduce((sum, month) => sum + month.totalOut, 0);
+  const net = inflow - outflow;
+  const figures = [
+    { label: "Inflow", value: inflow, hint: "All credits" },
+    { label: "Outflow", value: outflow, hint: "All debits" },
+    { label: "Net", value: net, hint: net >= 0 ? "Credits above debits" : "Debits above credits" },
+  ];
   return (
-    <section className="panel mt-8 p-5">
-      <SectionTitle title="Looking for a loan?" aside={<span className="text-sm text-muted">After the statement</span>} />
-      <p className="max-w-[42rem]">
-        AI can put an amount and an interest rate on the loan type you are looking for, using the cash flow just read.
-      </p>
-      <div className="mt-4 flex flex-wrap gap-3">
-        <button type="button" className={wants === true ? "on-ink px-4 py-2" : "rounded-xl border border-rule bg-white px-4 py-2"} onClick={() => setWants(true)}>
-          Yes, size a loan
-        </button>
-        <button
-          type="button"
-          className={wants === false ? "on-ink px-4 py-2" : "rounded-xl border border-rule bg-white px-4 py-2"}
-          onClick={() => {
-            setWants(false);
-            setPicked(null);
-          }}
-        >
-          Not now
-        </button>
-      </div>
-      {wants === false ? (
-        <p className="mt-4 text-sm text-muted">The statement stays as it is. Come back here when a loan is the question.</p>
-      ) : null}
-      {wants === true ? (
-        <div className="mt-6">
-          <h3 className="font-serif text-xl">Which loan are you looking for?</h3>
-          <ul className="mt-3 grid gap-3 sm:grid-cols-2">
-            {options.map((item) => (
-              <li key={item.id}>
-                <button
-                  type="button"
-                  className={`block h-full w-full rounded-xl border px-4 py-3 text-left ${picked === item.id ? "border-pine bg-[#e7f8f2]" : "border-rule bg-white"}`}
-                  onClick={() => setPicked(item.id)}
-                >
-                  <span className="font-medium">{item.name}</span>
-                  <span className="mt-1 block text-sm text-muted">{item.tenure}</span>
-                </button>
-              </li>
-            ))}
-          </ul>
-          {chosen ? (
-            <div className="mt-6 rounded-2xl border border-rule bg-[#f7fbf9] p-5">
-              <p className="text-sm text-muted">{FIT_WORD[chosen.fit]}</p>
-              <h3 className="mt-1 font-serif text-2xl">{chosen.name}</h3>
-              {chosen.amountHigh > 0 ? (
-                <>
-                  <p className="mt-4 text-sm text-muted">Amount you can get</p>
-                  <p className="num font-serif text-4xl leading-none">{inr(indicatedAmount, 0)}</p>
-                  <p className="num mt-1 text-sm text-muted">{inrBand(chosen.amountLow, chosen.amountHigh)}</p>
-                  <p className="mt-4 text-sm text-muted">Interest on this loan</p>
-                  <p className="num font-serif text-4xl leading-none text-pine">{pct(indicatedRate)}</p>
-                  <p className="num mt-1 text-sm text-muted">
-                    {pct(chosen.rateLow)} – {pct(chosen.rateHigh)} · {chosen.tenure}
-                  </p>
-                </>
-              ) : (
-                <p className="mt-4">This statement does not carry that loan. Cash left after the commitments on the file is too thin for it.</p>
-              )}
-              <p className="mt-4 max-w-[42rem] text-sm">{chosen.reading}</p>
-            </div>
-          ) : null}
+    <dl className="mt-6 grid gap-3 sm:grid-cols-3">
+      {figures.map((item) => (
+        <div key={item.label} className="rounded-2xl border border-rule bg-white px-4 py-3">
+          <dt className="text-sm text-muted">{item.label}</dt>
+          <dd className={`num mt-1 font-serif text-3xl leading-none ${item.label === "Net" && net < 0 ? "text-rust" : ""}`}>
+            {inr(item.value, 0)}
+          </dd>
+          <p className="mt-1 text-sm text-muted">{item.hint}</p>
         </div>
-      ) : null}
-    </section>
+      ))}
+    </dl>
+  );
+}
+
+function MoneyFlow({ analysis }: { analysis: Analysis }) {
+  const { setOpen } = useOpen();
+  return (
+    <div className="mt-4 grid gap-4 lg:grid-cols-2">
+      <FlowColumn
+        title="Money out"
+        hint="Where it went, by vendor"
+        groups={analysis.groups.spend.filter((group) => group.amount > 0).slice(0, 6)}
+        onGroup={(id) => setOpen({ kind: "group", id })}
+        onVendor={(groupId, name) => setOpen({ kind: "merchant", groupId, name })}
+      />
+      <FlowColumn
+        title="Money in"
+        hint="Where it came from"
+        groups={analysis.groups.income.filter((group) => group.amount > 0).slice(0, 6)}
+        onGroup={(id) => setOpen({ kind: "group", id })}
+        onVendor={(_groupId, name) => setOpen({ kind: "payer", name })}
+      />
+    </div>
+  );
+}
+
+function FlowColumn({
+  title,
+  hint,
+  groups,
+  onGroup,
+  onVendor,
+}: {
+  title: string;
+  hint: string;
+  groups: Analysis["groups"]["spend"];
+  onGroup: (id: string) => void;
+  onVendor: (groupId: string, name: string) => void;
+}) {
+  return (
+    <div className="rounded-2xl border border-rule bg-white px-4 py-3">
+      <h2 className="font-serif text-xl">{title}</h2>
+      <p className="text-sm text-muted">{hint}</p>
+      <ul className="mt-3">
+        {groups.map((group) => (
+          <li key={group.id} className="border-t border-rule py-2.5">
+            <button type="button" className="flex w-full items-baseline justify-between gap-3 text-left" onClick={() => onGroup(group.id)}>
+              <span className="inline-flex items-center gap-2 font-medium">
+                <span className="inline-block h-2.5 w-2.5" style={{ background: group.color }} />
+                {group.name}
+              </span>
+              <span className="num text-sm">
+                {inrCompact(group.amount)}
+                <span className="ml-2 text-muted">{pct(group.share)}</span>
+              </span>
+            </button>
+            <p className="mt-1 flex flex-wrap gap-x-3 gap-y-1 pl-4 text-sm text-muted">
+              {group.merchants.slice(0, 3).map((merchant) => (
+                <button key={merchant.name} type="button" className="underline-offset-2 hover:underline" onClick={() => onVendor(group.id, merchant.name)}>
+                  {merchant.name} {inrCompact(merchant.amount)}
+                </button>
+              ))}
+            </p>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -228,10 +269,18 @@ function Verdict({ analysis, policy }: { analysis: Analysis; policy: Policy }) {
             </span>
             <span className="text-muted">
               {" "}
-              over {policy.tenureMonths} months at {pct(policy.annualRate)}
+              over {yearsLabel(policy.tenureMonths)} at {pct(datasetRate(grade.letter)[0])}–{pct(datasetRate(grade.letter)[1])}
             </span>
           </p>
           <p className="mt-4 max-w-[46rem]">{summary}</p>
+          {analysis.payability.mode === "cashflow" ? (
+            <dl className="mt-5 grid max-w-[46rem] grid-cols-2 gap-px border border-rule bg-rule sm:grid-cols-4">
+              <CashCell label="Comes in" value={analysis.payability.workAvg} note={`Middle month ${inrCompact(analysis.payability.workIn)}`} />
+              <CashCell label="Goes out" value={analysis.payability.spentAvg} note={`Middle month ${inrCompact(analysis.payability.spent)}`} />
+              <CashCell label="Left" value={analysis.payability.left} note="Middle month, sets the EMI" />
+              <CashCell label="Own accounts" value={analysis.payability.moved} note="Left out of both sides" />
+            </dl>
+          ) : null}
         </div>
       </div>
     </div>
@@ -246,41 +295,34 @@ const KIND_LABEL: Record<SeriesKind, string> = {
   repeat: "Repeat",
 };
 
-const FIT_LABEL: Record<FacilityFit, string> = {
-  strong: "Strong fit",
-  conditional: "Conditional",
-  weak: "Weak fit",
-};
-
-function Facilities({ analysis }: { analysis: Analysis }) {
-  const { open, setOpen } = useOpen();
+function Facilities({ analysis, policy }: { analysis: Analysis; policy: Policy }) {
+  const [rateLow, rateHigh] = datasetRate(analysis.grade.letter);
+  const amount = analysis.capacity.bandHigh > 0 ? inrBand(analysis.capacity.bandLow, analysis.capacity.bandHigh) : "Rs 0";
   return (
     <div>
-      <SectionTitle title="Credit options" aside={<span className="text-sm text-muted">Amount and rate from the statement</span>} />
-      <p className="mb-4 max-w-[46rem] text-sm">{analysis.flows.reading}</p>
-      <ul className="grid gap-4 md:grid-cols-3">
-        {analysis.flows.facilities.map((item) => (
-          <li key={item.id}>
-            <button
-              type="button"
-              className={`block h-full w-full border border-rule p-4 text-left ${openMatch(open, { kind: "facility", id: item.id }) ? "picked" : ""}`}
-              onClick={() => setOpen({ kind: "facility", id: item.id })}
-            >
-              <span className="flex items-baseline justify-between gap-3 text-sm">
-                <span className="font-medium">{item.name}</span>
-                <span className={item.fit === "weak" ? "text-muted" : item.fit === "conditional" ? "text-brass" : "text-pine"}>
-                  {FIT_LABEL[item.fit]}
-                </span>
-              </span>
-              <span className="num mt-3 block font-serif text-2xl">{inrBand(item.amountLow, item.amountHigh)}</span>
-              <span className="mt-1 block text-sm text-muted">
-                {pct(item.rateLow)} – {pct(item.rateHigh)} · {item.tenure}
-              </span>
-              <span className="mt-3 block text-sm">{item.why}</span>
-            </button>
-          </li>
-        ))}
-      </ul>
+      <SectionTitle title="What this file can carry" aside={<span className="text-sm text-muted">Rate and term from the underwriting set</span>} />
+      <p className="max-w-[46rem] text-sm">
+        One offer for this grade. Personal, home, auto, and business loans in that set share this rate. The set does not price those types separately.
+      </p>
+      <dl className="mt-5 grid gap-px border border-rule bg-rule sm:grid-cols-3">
+        <div className="bg-white px-4 py-4">
+          <dt className="text-sm text-muted">Amount</dt>
+          <dd className="num mt-2 font-serif text-3xl leading-none">{amount}</dd>
+          <dd className="mt-2 text-sm text-muted">{inr(analysis.capacity.monthly, 0)} a month</dd>
+        </div>
+        <div className="bg-white px-4 py-4">
+          <dt className="text-sm text-muted">Interest</dt>
+          <dd className="num mt-2 font-serif text-3xl leading-none text-pine">
+            {pct(rateLow)} – {pct(rateHigh)}
+          </dd>
+          <dd className="mt-2 text-sm text-muted">Grade {analysis.grade.letter} band</dd>
+        </div>
+        <div className="bg-white px-4 py-4">
+          <dt className="text-sm text-muted">Term</dt>
+          <dd className="num mt-2 font-serif text-3xl leading-none">{yearsLabel(policy.tenureMonths)}</dd>
+          <dd className="mt-2 text-sm text-muted">{policy.tenureMonths} months on the set</dd>
+        </div>
+      </dl>
     </div>
   );
 }
@@ -430,10 +472,10 @@ function GroupList({
               </span>
               <span className="mt-1 block text-sm text-muted">
                 {group.merchants
-                  .slice(0, 3)
-                  .map((merchant) => merchant.name)
+                  .slice(0, 4)
+                  .map((merchant) => `${merchant.name} ${inrCompact(merchant.amount)}`)
                   .join(" · ")}
-                {group.merchants.length > 3 ? ` · ${group.merchants.length - 3} more` : ""}
+                {group.merchants.length > 4 ? ` · ${group.merchants.length - 4} more` : ""}
               </span>
             </button>
           </li>
@@ -443,13 +485,34 @@ function GroupList({
   );
 }
 
+function CashCell({ label, value, note }: { label: string; value: number; note: string }) {
+  return (
+    <div className="bg-white px-3 py-3">
+      <dt className="text-xs text-muted">{label}</dt>
+      <dd className="num mt-1 font-serif text-xl">{inrCompact(value)}</dd>
+      <dd className="text-xs text-muted">{note}</dd>
+    </div>
+  );
+}
+
 function Averages({ analysis }: { analysis: Analysis }) {
   const { open, setOpen } = useOpen();
   const m = analysis.metrics;
+  const cashflow = analysis.payability.mode === "cashflow";
   const items = [
-    { id: "earned", label: "Earned inflow", value: inrCompact(m.avgEarned), note: `median ${inrCompact(m.medianEarned)}` },
-    { id: "cash", label: "Cash after operations", value: inrCompact(m.medianCashAfterOps), note: `surplus after EMI and rent ${inrCompact(m.medianSurplus)}` },
-    { id: "obligations", label: "EMI + rent", value: pct(m.obligationRatio), note: "of average earned inflow" },
+    {
+      id: "earned",
+      label: cashflow ? "Cash from work" : "Earned inflow",
+      value: inrCompact(m.avgEarned),
+      note: `median ${inrCompact(m.medianEarned)}`,
+    },
+    {
+      id: "cash",
+      label: cashflow ? "Cash left" : "Cash after operations",
+      value: inrCompact(m.medianCashAfterOps),
+      note: cashflow ? "typical month, after spending" : `surplus after EMI and rent ${inrCompact(m.medianSurplus)}`,
+    },
+    { id: "obligations", label: "EMI + rent", value: pct(m.obligationRatio), note: cashflow ? "of cash from work" : "of average earned inflow" },
     { id: "bounces", label: "Returns, 6 months", value: String(m.bounces6m), note: `charges ${inr(m.bounceCharges, 0)}` },
     { id: "volatility", label: "Volatility", value: m.volatility.toFixed(2), note: `recent quarter ${signedPct(m.trend)}` },
     { id: "concentration", label: "Largest payer", value: pct(m.topShare), note: m.topName },
@@ -725,7 +788,9 @@ function Checks({ analysis }: { analysis: Analysis }) {
         ))}
       </ul>
       <p className="mt-4 text-sm text-muted">
-        AI groups each narration. Unclassified credits are treated as business receipts
+        {analysis.payability.mode === "cashflow"
+          ? "Each narration is grouped. With no salary, the EMI follows the cash that stays after own-account transfers and after spending already on the statement."
+          : "Each narration is grouped. Customer receipts and salary set the EMI, after rent, suppliers, and utilities."}
         ({pct(analysis.uncategorizedShare, 1)} of value stayed ungrouped).
       </p>
     </div>
@@ -835,7 +900,7 @@ function Rows({ analysis }: { analysis: Analysis }) {
           <thead className="sticky top-0 bg-paper">
             <tr>
               <th>Date</th>
-              <th>Description</th>
+              <th>Name</th>
               <th>Tag</th>
               <th className="num">Credit</th>
               <th className="num">Debit</th>
@@ -851,8 +916,10 @@ function Rows({ analysis }: { analysis: Analysis }) {
               >
                 <td className="whitespace-nowrap">{prettyDate(txn.date)}</td>
                 <td>
-                  {txn.description}
-                  <span className="block text-muted">{txn.counterparty}</span>
+                  <span className="font-medium">{txn.counterparty}</span>
+                  <span className="block text-sm text-muted">
+                    {partyKind(txn.description, txn.category)} · {railLabel(txn.description)}
+                  </span>
                 </td>
                 <td className="whitespace-nowrap text-muted">{groupName(analysis.groups, txn.id) || CATEGORY_LABEL[txn.category]}</td>
                 <td className="num">{txn.credit ? inr(txn.credit, 0) : ""}</td>

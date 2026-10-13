@@ -2,6 +2,7 @@
 
 import { useEffect, useState, createContext, useContext, type ReactNode } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
+import { partyKind, railLabel } from "@/lib/categorize";
 import { explainTxn } from "@/lib/explain";
 import { CATEGORY_LABEL, inr, inrCompact, pct, prettyDate } from "@/lib/format";
 import { railOf } from "@/lib/flows";
@@ -308,10 +309,11 @@ export function Depth({ analysis }: { analysis: Analysis }) {
               <tr key={txn.id} className="clickable" onClick={() => setTxn(txn.id)}>
                 <td className="whitespace-nowrap">{prettyDate(txn.date)}</td>
                 <td>
-                  {txn.description}
+                  <span className="font-medium">{txn.counterparty}</span>
                   <span className="mt-1 flex flex-wrap gap-1">
+                    <span className="tag">{partyKind(txn.description, txn.category)}</span>
+                    <span className="tag">{railLabel(txn.description)}</span>
                     <span className="tag">{CATEGORY_LABEL[txn.category]}</span>
-                    <span className="tag">{railOf(txn.description)}</span>
                   </span>
                 </td>
                 <td className="num">{inr(txn.credit || txn.debit, 0)}</td>

@@ -67,24 +67,30 @@ const BRANDS: [RegExp, string][] = [
   [/policybazaar/, "Policybazaar"],
 ];
 
+const BANK_TOKEN = /^(hdfc|hdfcbank|sbi|sbin|icici|axis|axisbank|kotak|yesbank|idfc|idfcbank|indusind|rbl|pnb|bob|canara|federal|bandhan|paytm|ubi|unionbank|okhdfcbank|okaxis|oksbi|okicici|ybl|ibl|axl|pty|apl)$/i;
+
 export function counterparty(description: string) {
-  const text = description.toLowerCase();
+  const normalized = description.replace(/[\u2010\u2011\u2012\u2013\u2014\u2212]/g, "-");
+  const text = normalized.toLowerCase();
   if (/int\.pd|interest paid/.test(text)) return "Interest";
   if (/^atm|atm-cash|atm cash/.test(text)) return "ATM";
   if (/cash dep|self cash dep/.test(text)) return "Cash deposit";
   for (const [pattern, brand] of BRANDS) {
     if (pattern.test(text)) return brand;
   }
-  const parts = description.split(/[/-]/).map((part) => part.replace(/\s+/g, " ").trim()).filter(Boolean);
-  for (const part of parts) {
-    const compact = part.replace(/\s/g, "");
-    if (compact.length < 2 || /^\d+$/.test(compact) || /^[a-z]*\d{6,}/i.test(compact)) continue;
-    const words = part.split(" ").filter(Boolean);
-    if (words.every((word) => SKIP.has(word.toLowerCase().replace(/[^a-z0-9]/g, "")))) continue;
-    if (/\b(bank|limited|ltd|ybs)\b/i.test(part) && !/\b(broking|clearing|payments|food|cafe|store)\b/i.test(part)) continue;
-    return presentName(part);
+  const named: string[] = [];
+  const handles: string[] = [];
+  for (const part of normalized.split(/[/\-|]/)) {
+    const piece = part.replace(/\s+/g, " ").trim();
+    if (!piece || isNoise(piece) || isBankPiece(piece)) continue;
+    if (piece.includes("@")) {
+      const handle = vpaName(piece);
+      if (handle) handles.push(handle);
+      continue;
+    }
+    named.push(presentName(piece));
   }
-  return "Unknown";
+  return named[0] || handles[0] || "Unknown";
 }
 
 export function partyKind(description: string, category?: string) {
@@ -92,14 +98,14 @@ export function partyKind(description: string, category?: string) {
   if (category === "self_in" || category === "self_out" || /\bself\b|own account|own a\/c/.test(text)) return "Self";
   if (/int\.pd|interest paid|chrgs|charges|gst/.test(text)) return "Bank";
   if (/cash dep|^atm|atm-cash|atm cash/.test(text)) return "Cash";
-  if (/upi\/p2a|imps\/p2a|upi\/p2p|@(?:ok\w*|ybl|axl|ibl|pty|upi)\b/.test(text)) return "Person";
-  if (/upi\/p2m|pos\/|^ecom|nach|mandate/.test(text)) return "Merchant";
+  if (/@|upi\/p2a|imps\/p2a|upi\/p2p/.test(text)) return /autopay|p2m|merchant/.test(text) ? "Merchant" : "Person";
+  if (/upi\/p2m|pos\/|^ecom|nach|mandate|\bupi\b/.test(text)) return /\bupi\b/.test(text) && !/p2m|merchant/.test(text) ? "Person" : "Merchant";
   return "Transfer";
 }
 
 export function railLabel(description: string) {
   const text = description.toUpperCase();
-  if (text.includes("UPI/") || text.includes("/UPI")) return "UPI";
+  if (text.includes("UPI/") || text.includes("/UPI") || text.startsWith("UPI-") || text.startsWith("UPI ") || text.includes("@")) return "UPI";
   if (text.startsWith("NEFT")) return "NEFT";
   if (text.startsWith("IMPS")) return "IMPS";
   if (text.startsWith("RTGS")) return "RTGS";
@@ -107,6 +113,26 @@ export function railLabel(description: string) {
   if (/^(NACH|ECS|ACH)\b/.test(text)) return "NACH";
   if (text.includes("ATM") || text.includes("CASH")) return "Cash";
   return "Transfer";
+}
+
+function isNoise(part: string) {
+  const compact = part.replace(/\s/g, "");
+  if (compact.length < 2 || /^\d+$/.test(compact) || /^[a-z]*\d{6,}/i.test(compact)) return true;
+  const words = part.split(" ").filter(Boolean);
+  return words.every((word) => SKIP.has(word.toLowerCase().replace(/[^a-z0-9]/g, "")));
+}
+
+function isBankPiece(part: string) {
+  const compact = part.toLowerCase().replace(/[^a-z]/g, "");
+  if (BANK_TOKEN.test(compact)) return true;
+  return /\bbank\b/i.test(part) && !/\b(broking|clearing|payments|food|cafe|store|life|securities)\b/i.test(part);
+}
+
+function vpaName(part: string) {
+  const local = part.slice(0, part.indexOf("@")).replace(/[^a-z0-9 ]/gi, "");
+  if (!local || isBankPiece(local) || /^\d+$/.test(local)) return "";
+  const spaced = local.replace(/autopay$/i, " autopay").replace(/\s+/g, " ").trim();
+  return presentName(spaced);
 }
 
 function presentName(raw: string) {

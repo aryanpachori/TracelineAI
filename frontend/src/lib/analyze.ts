@@ -638,19 +638,20 @@ function pushSpendFlags(reasons: Reason[], txns: Txn[]) {
     if (before <= 0 || delta < 5000 || delta / before < 0.2) return;
     if (!jump || delta > jump.delta) jump = { name: row.name, delta, change: delta / before, ids: row.ids };
   });
-  if (jump) {
-    const amounts = txns.filter((txn) => jump?.ids.includes(txn.id)).map((txn) => txn.debit);
+  const spike = jump;
+  if (spike) {
+    const amounts = txns.filter((txn) => spike.ids.includes(txn.id)).map((txn) => txn.debit);
     const peak = amounts.length ? Math.max(...amounts) : 0;
     const monthTotal = amounts.reduce((sum, amount) => sum + amount, 0);
     const oneOff = monthTotal > 0 && peak >= monthTotal * 0.7;
     reasons.push({
       code: "SPEND_JUMP",
       severity: oneOff ? "info" : "watch",
-      title: oneOff ? `${jump.name} spiked on one payment` : `${jump.name} jumped against the prior month`,
+      title: oneOff ? `${spike.name} spiked on one payment` : `${spike.name} jumped against the prior month`,
       detail: oneOff
-        ? `${jump.name} was ${inr(jump.delta, 0)} higher than the month before, and one payment is most of that month.`
-        : `${jump.name} was ${Math.round(jump.change * 100)}% higher than the month before, up ${inr(jump.delta, 0)}.`,
-      txnIds: jump.ids,
+        ? `${spike.name} was ${inr(spike.delta, 0)} higher than the month before, and one payment is most of that month.`
+        : `${spike.name} was ${Math.round(spike.change * 100)}% higher than the month before, up ${inr(spike.delta, 0)}.`,
+      txnIds: spike.ids,
     });
   }
 

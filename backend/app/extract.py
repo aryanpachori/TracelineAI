@@ -82,7 +82,10 @@ def statement_text(name: str, raw: bytes) -> str:
         pages = []
         blank = []
         for index, page in enumerate(reader.pages, start=1):
-            text = page.extract_text() or ""
+            try:
+                text = page.extract_text() or ""
+            except Exception:
+                text = ""
             if len(text.strip()) < 20:
                 blank.append(index)
             pages.append(text)

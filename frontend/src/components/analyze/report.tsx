@@ -125,20 +125,67 @@ export function Report({
   );
 }
 
+function InfoTip({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  const hideTimer = useRef<number | null>(null);
+  function show() {
+    if (hideTimer.current) window.clearTimeout(hideTimer.current);
+    setOpen(true);
+  }
+  function hide() {
+    hideTimer.current = window.setTimeout(() => setOpen(false), 160);
+  }
+  return (
+    <>
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-label={text}
+        className="no-print ml-1 inline-flex h-4 w-4 items-center justify-center rounded-full border border-current text-[10px] font-semibold leading-none text-muted"
+        onMouseEnter={show}
+        onMouseLeave={hide}
+        onFocus={show}
+        onBlur={hide}
+        onMouseDown={(event) => event.stopPropagation()}
+        onClick={(event) => {
+          event.stopPropagation();
+          event.preventDefault();
+          show();
+        }}
+      >
+        i
+      </button>
+      {open ? (
+        <span role="tooltip" className="no-print basis-full pt-1 text-left text-xs font-normal leading-snug text-ink" onMouseEnter={show} onMouseLeave={hide}>
+          {text}
+        </span>
+      ) : null}
+    </>
+  );
+}
+
 function FlowTotals({ analysis }: { analysis: Analysis }) {
   const inflow = analysis.months.reduce((sum, month) => sum + month.totalIn, 0);
   const outflow = analysis.months.reduce((sum, month) => sum + month.totalOut, 0);
   const net = inflow - outflow;
   const figures = [
-    { label: "Inflow", value: inflow, hint: "All credits" },
-    { label: "Outflow", value: outflow, hint: "All debits" },
-    { label: "Net", value: net, hint: net >= 0 ? "Credits above debits" : "Debits above credits" },
+    { label: "Inflow", value: inflow, hint: "All credits", how: "Sum of every credit on the statement." },
+    { label: "Outflow", value: outflow, hint: "All debits", how: "Sum of every debit on the statement." },
+    {
+      label: "Net",
+      value: net,
+      hint: net >= 0 ? "Credits above debits" : "Debits above credits",
+      how: "Inflow minus outflow. A row with both a credit and a debit counts on both sides.",
+    },
   ];
   return (
     <dl className="mt-6 grid gap-3 sm:grid-cols-3">
       {figures.map((item) => (
         <div key={item.label} className="rounded-2xl border border-rule bg-white px-4 py-3">
-          <dt className="text-sm text-muted">{item.label}</dt>
+          <dt className="flex flex-wrap items-center text-sm text-muted">
+            {item.label}
+            <InfoTip text={item.how} />
+          </dt>
           <dd className={`num mt-1 font-serif text-3xl leading-none ${item.label === "Net" && net < 0 ? "text-rust" : ""}`}>
             {inr(item.value, 0)}
           </dd>
@@ -255,10 +302,10 @@ function Verdict({ analysis, policy }: { analysis: Analysis; policy: Policy }) {
           <p className="mt-4 max-w-[46rem]">{summary}</p>
           {analysis.payability.mode === "cashflow" ? (
             <dl className="mt-5 grid max-w-[46rem] grid-cols-2 gap-px border border-rule bg-rule sm:grid-cols-4">
-              <CashCell label="Comes in" value={analysis.payability.workAvg} note={`Middle month ${inrCompact(analysis.payability.workIn)}`} />
-              <CashCell label="Goes out" value={analysis.payability.spentAvg} note={`Middle month ${inrCompact(analysis.payability.spent)}`} />
-              <CashCell label="Left" value={analysis.payability.left} note="Middle month, sets the EMI" />
-              <CashCell label="Own accounts" value={analysis.payability.moved} note="Left out of both sides" />
+              <CashCell label="Comes in" value={analysis.payability.workAvg} note={`Middle month ${inrCompact(analysis.payability.workIn)}`} how="Average monthly cash from work: customer receipts, salary, inbound transfers, and cash deposits. Self-transfers, loans, interest, investments, and a credit matched by a similar debit within 3 days are left out." />
+              <CashCell label="Goes out" value={analysis.payability.spentAvg} note={`Middle month ${inrCompact(analysis.payability.spent)}`} how="Average monthly spending. Self-transfers, returned cheques, and those matched round-trips are left out." />
+              <CashCell label="Left" value={analysis.payability.left} note="Middle month, sets the EMI" how="A typical month of cash from work minus spending. The new EMI is taken from this figure." />
+              <CashCell label="Own accounts" value={analysis.payability.moved} note="Left out of both sides" how="Transfers between the borrower's own accounts, plus a credit matched by a similar debit within 3 days." />
             </dl>
           ) : null}
         </div>
@@ -465,10 +512,13 @@ function GroupList({
   );
 }
 
-function CashCell({ label, value, note }: { label: string; value: number; note: string }) {
+function CashCell({ label, value, note, how }: { label: string; value: number; note: string; how: string }) {
   return (
     <div className="bg-white px-3 py-3">
-      <dt className="text-xs text-muted">{label}</dt>
+      <dt className="flex flex-wrap items-center text-xs text-muted">
+        {label}
+        <InfoTip text={how} />
+      </dt>
       <dd className="num mt-1 font-serif text-xl">{inrCompact(value)}</dd>
       <dd className="text-xs text-muted">{note}</dd>
     </div>
@@ -485,33 +535,47 @@ function Averages({ analysis }: { analysis: Analysis }) {
       label: cashflow ? "Cash from work" : "Earned inflow",
       value: inrCompact(m.avgEarned),
       note: `median ${inrCompact(m.medianEarned)}`,
+      how: cashflow
+        ? "Credits from customers, salary, inbound transfers, and cash deposits. Self-transfers, loans, interest, investments, and a credit matched by a similar debit within 3 days are left out."
+        : "Business receipts and salary, minus returned cheques. Loans, cash deposits, and self-transfers stay in Inflow and out of this figure.",
     },
     {
       id: "cash",
       label: cashflow ? "Cash left" : "Cash after operations",
       value: inrCompact(m.medianCashAfterOps),
       note: cashflow ? "typical month, after spending" : `surplus after EMI and rent ${inrCompact(m.medianSurplus)}`,
+      how: cashflow
+        ? "A typical month of cash from work minus spending. Self-transfers and matched round-trips are left out of both sides."
+        : "Earned inflow minus EMI, rent, suppliers, utilities, tax, and bounce charges.",
     },
-    { id: "obligations", label: "EMI + rent", value: pct(m.obligationRatio), note: cashflow ? "of cash from work" : "of average earned inflow" },
-    { id: "bounces", label: "Returns, 6 months", value: String(m.bounces6m), note: `charges ${inr(m.bounceCharges, 0)}` },
-    { id: "volatility", label: "Volatility", value: m.volatility.toFixed(2), note: `recent quarter ${signedPct(m.trend)}` },
-    { id: "concentration", label: "Largest payer", value: pct(m.topShare), note: m.topName },
+    {
+      id: "obligations",
+      label: "EMI + rent",
+      value: pct(m.obligationRatio),
+      note: cashflow ? "of cash from work" : "of average earned inflow",
+      how: cashflow ? "EMI and rent, divided by average cash from work." : "EMI and rent, divided by average earned inflow.",
+    },
+    { id: "bounces", label: "Returns, 6 months", value: String(m.bounces6m), note: `charges ${inr(m.bounceCharges, 0)}`, how: "Returned cheques in the last 6 months. The charge line is the bank fee on those returns." },
+    { id: "volatility", label: "Volatility", value: m.volatility.toFixed(2), note: `recent quarter ${signedPct(m.trend)}`, how: "How far each month's earned inflow sits from the average. The recent quarter compares the last 3 months with the 3 before." },
+    { id: "concentration", label: "Largest payer", value: pct(m.topShare), note: m.topName, how: cashflow ? "The largest source of cash from work, as a share of that cash." : "The largest source of business receipts, as a share of those receipts." },
   ];
   return (
     <div>
       <SectionTitle title="Averages" aside={<span className="text-sm text-muted">Open any figure</span>} />
       <dl className="grid grid-cols-2 border-b border-rule md:grid-cols-3 xl:grid-cols-6">
         {items.map((item) => (
-          <button
-            key={item.id}
-            type="button"
-            className={`border-t border-rule py-3 pr-4 text-left ${openMatch(open, { kind: "metric", id: item.id }) ? "picked px-2" : ""}`}
-            onClick={() => setOpen({ kind: "metric", id: item.id })}
-          >
-            <dt className="text-sm text-muted">{item.label}</dt>
-            <dd className="num mt-1 text-2xl">{item.value}</dd>
-            <dd className="text-sm text-muted">{item.note}</dd>
-          </button>
+          <div key={item.id} className={`border-t border-rule py-3 pr-4 ${openMatch(open, { kind: "metric", id: item.id }) ? "picked px-2" : ""}`}>
+            <div className="flex flex-wrap items-center">
+              <button type="button" className="text-left text-sm text-muted" onClick={() => setOpen({ kind: "metric", id: item.id })}>
+                {item.label}
+              </button>
+              <InfoTip text={item.how} />
+            </div>
+            <button type="button" className="w-full text-left" onClick={() => setOpen({ kind: "metric", id: item.id })}>
+              <dd className="num mt-1 text-2xl">{item.value}</dd>
+              <dd className="text-sm text-muted">{item.note}</dd>
+            </button>
+          </div>
         ))}
       </dl>
       <p className="mt-3 max-w-[46rem] text-sm text-muted">

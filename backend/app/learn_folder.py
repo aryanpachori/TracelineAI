@@ -6,6 +6,7 @@ Image-only files are skipped. Categories stay inside the existing set.
 import asyncio
 import csv
 import json
+import logging
 import os
 import sys
 from collections import Counter
@@ -24,8 +25,7 @@ from app.extract import (
 )
 from app.model import NARRATION_PATH
 
-FOLDER = Path(r"C:\Users\aryan\Downloads\bank-statements")
-REPORT = Path(__file__).resolve().parents[1] / "data" / "learn" / "folder-report.json"
+DEFAULT_FOLDER = Path(r"C:\Users\aryan\Downloads\bank-statements")
 TEACHER = Path(__file__).resolve().parents[1] / "data" / "learn" / "teacher.csv"
 
 
@@ -74,6 +74,19 @@ async def label_open(pending: list[dict]) -> dict[int, str]:
     return labelled
 
 
+def already_taught() -> set[tuple[str, str]]:
+    if not TEACHER.exists():
+        return set()
+    known: set[tuple[str, str]] = set()
+    with TEACHER.open(encoding="utf-8", newline="") as handle:
+        for row in csv.DictReader(handle):
+            text = str(row.get("text") or "").strip().lower()
+            category = str(row.get("category") or "")
+            if text and category:
+                known.add((text, category))
+    return known
+
+
 def teach(pairs: list[tuple[str, str]]) -> int:
     if not pairs:
         return 0
@@ -81,7 +94,14 @@ def teach(pairs: list[tuple[str, str]]) -> int:
     classifier = bundle["classifier"]
     vectorizer = bundle["vectorizer"]
     known = set(classifier.classes_)
-    usable = [(text, label) for text, label in pairs if label in known]
+    seen = already_taught()
+    usable = []
+    for text, label in pairs:
+        key = (text.strip().lower(), label)
+        if label not in known or key in seen:
+            continue
+        seen.add(key)
+        usable.append((text, label))
     if not usable:
         return 0
     TEACHER.parent.mkdir(parents=True, exist_ok=True)
@@ -102,8 +122,11 @@ def teach(pairs: list[tuple[str, str]]) -> int:
 
 
 async def main() -> None:
+    logging.getLogger("pypdf").setLevel(logging.ERROR)
     load_env()
-    files = sorted(FOLDER.glob("*.pdf")) + sorted(FOLDER.glob("*.PDF"))
+    folder = Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_FOLDER
+    report_path = TEACHER.parent / f"{folder.name}-report.json"
+    files = sorted(folder.glob("*.pdf")) + sorted(folder.glob("*.PDF"))
     seen = set()
     unique_files = []
     for path in files:
@@ -122,11 +145,14 @@ async def main() -> None:
     for path in unique_files:
         try:
             text = statement_text(path.name, path.read_bytes())
-        except ValueError as exc:
+            rows = parse_statement_rows(text)
+        except (ValueError, OSError, RuntimeError) as exc:
             skipped.append({"file": path.name, "reason": str(exc)})
             continue
+        except Exception as exc:
+            skipped.append({"file": path.name, "reason": f"{type(exc).__name__}: {exc}"})
+            continue
         banks[bank_hint(text)] += 1
-        rows = parse_statement_rows(text)
         if len(rows) < 5:
             thin.append(path.name)
             continue
@@ -157,6 +183,7 @@ async def main() -> None:
         taught_counts[category] += 1
     learned = teach(pairs)
     report = {
+        "folder": str(folder),
         "files": len(unique_files),
         "skipped": len(skipped),
         "thin": len(thin),
@@ -169,8 +196,8 @@ async def main() -> None:
         "taught": dict(taught_counts),
         "skip_reasons": Counter(item["reason"] for item in skipped).most_common(),
     }
-    REPORT.parent.mkdir(parents=True, exist_ok=True)
-    REPORT.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(json.dumps(report, indent=2))
 
 

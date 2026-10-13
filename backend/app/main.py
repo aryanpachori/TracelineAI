@@ -24,7 +24,11 @@ load_env()
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "https://traceline-ai.vercel.app",
+    ],
     allow_methods=["POST", "OPTIONS"],
     allow_headers=["*"],
 )

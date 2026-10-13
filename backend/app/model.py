@@ -59,9 +59,12 @@ def learn_from_teacher(narration: str, category: str, debit: float, credit: floa
         del _pending[:BATCH]
         classifier = bundle["classifier"]
         vector = bundle["vectorizer"].transform([item[0] for item in batch])
-        classifier.partial_fit(vector, [item[1] for item in batch])
-        bundle["learned"] = int(bundle.get("learned") or 0) + len(batch)
-        joblib.dump(bundle, NARRATION_PATH)
+        try:
+            classifier.partial_fit(vector, [item[1] for item in batch])
+            bundle["learned"] = int(bundle.get("learned") or 0) + len(batch)
+            joblib.dump(bundle, NARRATION_PATH)
+        except (OSError, ValueError):
+            return
 
 
 def _append(text: str, category: str) -> None:

@@ -1,9 +1,9 @@
 import json
 import os
+import re
 import sys
 import asyncio
 import time
-from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from pathlib import Path
 
@@ -73,7 +73,12 @@ def complete(system: str, user: str) -> dict:
 
 def statement_text(name: str, raw: bytes) -> str:
     if name.lower().endswith(".pdf") or raw[:4] == b"%PDF":
-        reader = PdfReader(BytesIO(raw))
+        try:
+            reader = PdfReader(BytesIO(raw))
+        except Exception as error:
+            raise ValueError("This PDF could not be opened. Export a CSV or a text PDF from the bank.") from error
+        if reader.is_encrypted and reader.decrypt("") == 0:
+            raise ValueError("This statement is password protected. Export a CSV or an unlocked PDF from the bank.")
         pages = []
         blank = []
         for index, page in enumerate(reader.pages, start=1):
@@ -81,22 +86,523 @@ def statement_text(name: str, raw: bytes) -> str:
             if len(text.strip()) < 20:
                 blank.append(index)
             pages.append(text)
-        if blank:
-            page = blank[0]
+        if blank and len(blank) == len(pages):
             raise ValueError(
-                f"Page {page} has no text layer. Export a CSV or a text PDF from the bank."
+                f"Page {blank[0]} has no text layer. Export a CSV or a text PDF from the bank."
             )
+        if blank:
+            note(f"skipped {len(blank)} page(s) with no text")
         return "\n".join(pages).strip()
     return raw.decode("utf-8", errors="replace")
 
 
+MONTHS = {
+    "jan": 1, "january": 1, "feb": 2, "february": 2, "mar": 3, "march": 3,
+    "apr": 4, "april": 4, "may": 5, "jun": 6, "june": 6, "jul": 7, "july": 7,
+    "aug": 8, "august": 8, "sep": 9, "sept": 9, "september": 9,
+    "oct": 10, "october": 10, "nov": 11, "november": 11, "dec": 12, "december": 12,
+}
+MONEY = re.compile(
+    r"(?<![\d.])(?:\d{1,3}(?:,\d{2,3})+|\d+)\.\d{2}-?"
+    r"|(?<![\d.])(?:\d{1,3}(?:,\d{2,3})+|\d+)(?=\s*\(?\s*(?:cr|dr)\b)",
+    re.IGNORECASE,
+)
+DATE_NUMERIC = re.compile(
+    r"^(?:(?P<serial>\d{1,5})\s+)?(?P<day>\d{1,2})[./-](?P<month>\d{1,2})[./-](?P<year>\d{2,4})(?P<rest>\s+.*)?$"
+)
+DATE_NAMED = re.compile(
+    r"^(?:(?P<serial>\d{1,5})\s+)?(?P<day>\d{1,2})[\s-](?P<month>[A-Za-z]{3,9})[\s-](?P<year>\d{2,4})(?P<rest>\s+.*)?$"
+)
+DATE_ISO = re.compile(r"^(?P<year>\d{4})-(?P<month>\d{2})-(?P<day>\d{2})(?P<rest>\s+.*)?$")
+OPENING = re.compile(
+    r"opening balance|opening bal|\bop\.?\s*bal\b|balance brought forward|brought forward|brought fwd|balance b/f|\bb/f\b|\bb/fwd\b|previous balance",
+    re.IGNORECASE,
+)
+DATE_RANGE = re.compile(
+    r"^\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\s+(?:to|-|–)\s+\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b",
+    re.IGNORECASE,
+)
+LEADING_DATE = re.compile(
+    r"^(?:\d{1,2}[./-]\d{1,2}[./-]\d{2,4}|\d{1,2}[\s-][A-Za-z]{3,9}[\s-]\d{2,4}|\d{4}-\d{2}-\d{2})\s+",
+    re.IGNORECASE,
+)
+CREDIT_HINTS = (
+    "credit trxn", "int.pd", "int paid", "interest paid", "refund", "rfnd", "reversal",
+    "by transfer", "neft cr", "imps cr", "upi/cr", "upi cr", "by cash", "cash deposit",
+    "by clg", "ach credit", "salary credit", "cr-",
+)
+DEBIT_HINTS = ("to transfer", "upi/dr", "upi dr", "ach d", "ach dr", "atm-", "pos/", "pos ", "paid via", "withdrawal")
+NOISE = (
+    "s no.", "s.no", "sl no", "sl.no", "statement of transactions", "your base branch",
+    "legends for transactions", "tran date", "transaction date", "txn date", "value date",
+)
+
+
+def parse_statement_rows(text: str) -> list[dict]:
+    table = parse_delimited(text)
+    if len(table) >= 2:
+        return table
+    entries = []
+    current = None
+    opening = None
+    for raw_line in text.splitlines():
+        line = clean_line(raw_line)
+        if not line:
+            continue
+        opened = opening_amount(line)
+        if opened is not None:
+            if current is None:
+                opening = opened
+            continue
+        if banner(line):
+            continue
+        started = match_date_line(line)
+        if started:
+            boundary = current is None or entry_complete(current)
+            if (
+                not boundary
+                and started["serial"] is not None
+                and current["serial"] is not None
+                and started["serial"] > current["serial"]
+            ):
+                boundary = True
+            if boundary:
+                if current:
+                    entries.append(current)
+                current = started
+            elif started["bits"]:
+                current["bits"].extend(started["bits"])
+            continue
+        if current:
+            current["bits"].append(line)
+    if current:
+        entries.append(current)
+    if len(entries) < 2:
+        return []
+
+    rows = []
+    previous = opening
+    for entry in entries:
+        parsed = parse_entry(entry, previous)
+        if not parsed:
+            continue
+        previous = parsed["balance"] if parsed["balance"] is not None else previous
+        rows.append(parsed)
+    rows = align_to_balance(rows, opening)
+    if len(rows) < 2 or not chain_holds(rows, opening):
+        note("statement layout did not tie to the running balance")
+        return []
+    if len(rows) < 5 and not fully_tied(rows, opening):
+        return []
+    return rows
+
+
+def clean_line(raw: str) -> str:
+    line = raw.replace("\u00a0", " ").replace("\u202f", " ").replace("₹", " ")
+    line = " ".join(line.split())
+    line = re.sub(r"^(\d{1,5})[.)]\s+(?=\d)", r"\1 ", line)
+    line = re.sub(r"(\d{1,2})\s*[-/]\s*([A-Za-z]{3,9})\s*[-/]\s*(\d{2,4})", r"\1-\2-\3", line)
+    line = re.sub(r"(\d)\s*([./-])\s*(?=\d)", r"\1\2", line)
+    return line
+
+
+def opening_amount(line: str) -> float | None:
+    if match_date_line(line) or not OPENING.search(line):
+        return None
+    amounts = money_matches(line)
+    if not amounts:
+        return None
+    return signed_balance(line, amounts[-1])
+
+
+def banner(line: str) -> bool:
+    lowered = line.lower()
+    if DATE_RANGE.match(line) or any(lowered.startswith(prefix) for prefix in NOISE):
+        return True
+    if re.match(r"^(page\s+\d+|carried forward|c/f\b|grand total|page total)\b", lowered):
+        return True
+    if "computer generated" in lowered or "end of statement" in lowered or lowered.startswith("registered office"):
+        return len(MONEY.findall(line)) < 2
+    return False
+
+
+def entry_complete(entry: dict) -> bool:
+    return amount_cluster(" ".join(entry["bits"])) is not None
+
+
+def parse_entry(entry: dict, previous: float | None) -> dict | None:
+    blob = " ".join(entry["bits"])
+    cluster = amount_cluster(blob)
+    if not cluster:
+        return None
+    narration = strip_leading_dates(blob[: cluster[0].start()].strip(" |-"))
+    if not narration:
+        return None
+    values = [money_value(item.group()) for item in cluster]
+    markers = [amount_marker(blob, item) for item in cluster]
+    balance = signed_balance(blob, cluster[-1])
+    debit, credit = sides_from_values(narration, values, markers, balance, previous)
+    if debit == 0 and credit == 0:
+        return None
+    return {
+        "date": entry["date"],
+        "description": narration[:240],
+        "debit": round(debit, 2),
+        "credit": round(credit, 2),
+        "balance": round(balance, 2),
+        "category": "other_out" if debit else "other_in",
+    }
+
+
+def strip_leading_dates(text: str) -> str:
+    original = text
+    for _ in range(2):
+        updated = LEADING_DATE.sub("", text).strip()
+        if updated == text:
+            break
+        text = updated
+    return text or original
+
+
+def sides_from_values(narration: str, values: list[float], markers: list[str | None], balance: float, previous: float | None) -> tuple[float, float]:
+    if len(values) == 2:
+        return side_from_balance(narration, values[0], balance, previous, markers[0])
+    withdrawal, deposit = values[0], values[1]
+    if withdrawal and deposit and previous is not None:
+        delta = round(balance - previous, 2)
+        if abs(delta - round(deposit - withdrawal, 2)) <= 0.05:
+            return withdrawal, deposit
+        if abs(delta - round(withdrawal - deposit, 2)) <= 0.05:
+            return deposit, withdrawal
+        for amount, marker in ((withdrawal, markers[0]), (deposit, markers[1])):
+            if abs(abs(delta) - amount) <= 0.05:
+                return side_from_balance(narration, amount, balance, previous, marker)
+    if withdrawal and deposit:
+        return withdrawal, deposit
+    if previous is not None:
+        amount = withdrawal or deposit
+        marker = markers[0] if withdrawal else markers[1]
+        return side_from_balance(narration, amount, balance, previous, marker)
+    if withdrawal and not deposit:
+        return withdrawal, 0.0
+    return 0.0, deposit
+
+
+def match_date_line(line: str) -> dict | None:
+    iso = DATE_ISO.match(line)
+    if iso:
+        found = build_date(int(iso.group("day")), int(iso.group("month")), int(iso.group("year")))
+        if found:
+            rest = (iso.group("rest") or "").strip()
+            return {"serial": None, "date": found, "bits": [rest] if rest else []}
+    for pattern, named in ((DATE_NAMED, True), (DATE_NUMERIC, False)):
+        match = pattern.match(line)
+        if not match:
+            continue
+        month_token = match.group("month")
+        month = MONTHS.get(month_token.lower()) if named else int(month_token)
+        if not month:
+            continue
+        found = build_date(int(match.group("day")), month, int(match.group("year")))
+        if not found:
+            continue
+        serial = int(match.group("serial")) if match.group("serial") else None
+        rest = (match.group("rest") or "").strip()
+        return {"serial": serial, "date": found, "bits": [rest] if rest else []}
+    return None
+
+
+def build_date(day: int, month: int, year: int) -> str | None:
+    if year < 100:
+        year += 2000 if year < 70 else 1900
+    if not (1 <= day <= 31 and 1 <= month <= 12 and 1990 <= year <= 2100):
+        return None
+    return f"{year:04d}-{month:02d}-{day:02d}"
+
+
+def parse_delimited(text: str) -> list[dict]:
+    sample = text[:4000]
+    counts = {",": sample.count(","), "\t": sample.count("\t"), "|": sample.count("|"), ";": sample.count(";")}
+    delimiter, count = max(counts.items(), key=lambda item: item[1])
+    if count < 4:
+        return []
+    import csv
+    from io import StringIO
+
+    rows = list(csv.reader(StringIO(text), delimiter=delimiter))
+    header_index = next((index for index, row in enumerate(rows[:20]) if looks_like_header(row)), None)
+    if header_index is None:
+        return []
+    header = [cell.strip().lower() for cell in rows[header_index]]
+    columns = {
+        "date": find_column(header, ("txn date", "tran date", "transaction date", "posting date", "posted date", "date", "value date", "value dt", "txn dt")),
+        "description": find_column(header, ("description", "narration", "particulars", "remarks", "details", "transaction remarks")),
+        "debit": find_column(header, ("withdrawal amount", "withdrawal amt", "withdrawal", "debit amount", "debit amt", "debit", "dr")),
+        "credit": find_column(header, ("deposit amount", "deposit amt", "deposit", "credit amount", "credit amt", "credit", "cr")),
+        "amount": find_column(header, ("transaction amount", "txn amount", "amount")),
+        "balance": find_column(header, ("closing balance", "running balance", "available balance", "balance")),
+    }
+    if columns["date"] < 0 or (columns["debit"] < 0 and columns["credit"] < 0 and columns["amount"] < 0):
+        return []
+    parsed = []
+    opening = None
+    for row in rows[header_index + 1 :]:
+        if columns["date"] >= len(row):
+            continue
+        started = match_date_line(clean_line(row[columns["date"]]))
+        if not started:
+            continue
+        description = row[columns["description"]].strip() if 0 <= columns["description"] < len(row) else "Statement row"
+        debit, credit = read_side_columns(row, columns)
+        balance = cell_balance(row, columns["balance"])
+        if debit == 0 and credit == 0:
+            if balance is not None and OPENING.search(description):
+                opening = balance
+            continue
+        parsed.append(
+            {
+                "date": started["date"],
+                "description": (description or "Statement row")[:240],
+                "debit": debit,
+                "credit": credit,
+                "balance": balance,
+                "category": "other_out" if debit else "other_in",
+            }
+        )
+    parsed = align_to_balance(parsed, opening)
+    if len(parsed) < 2 or not chain_holds(parsed, opening):
+        return []
+    return parsed
+
+
+def looks_like_header(row: list[str]) -> bool:
+    cells = [cell.strip().lower() for cell in row if cell.strip()]
+    if len(cells) < 3:
+        return False
+    has_date = any(cell == name or (len(name) > 2 and cell.startswith(name)) for cell in cells for name in ("date", "txn date", "tran date", "transaction date", "value date", "posted date"))
+    has_money = any(any(word in cell for word in ("debit", "credit", "withdrawal", "deposit", "amount")) for cell in cells)
+    has_text = any(any(word in cell for word in ("narration", "particulars", "description", "remarks", "details")) for cell in cells)
+    return has_date and has_money and has_text
+
+
+def find_column(header: list[str], names: tuple[str, ...]) -> int:
+    for name in names:
+        for index, cell in enumerate(header):
+            if cell == name or (len(name) > 2 and cell.startswith(name)):
+                return index
+    return -1
+
+
+def read_side_columns(row: list[str], columns: dict) -> tuple[float, float]:
+    debit_at, credit_at, amount_at = columns["debit"], columns["credit"], columns["amount"]
+    if debit_at >= 0 and debit_at == credit_at:
+        return marked_sides(cell_at(row, debit_at))
+    if debit_at >= 0 and credit_at >= 0:
+        return plain_amount(cell_at(row, debit_at)), plain_amount(cell_at(row, credit_at))
+    if debit_at >= 0:
+        return marked_sides(cell_at(row, debit_at))
+    if credit_at >= 0:
+        return marked_sides(cell_at(row, credit_at), default="cr")
+    if amount_at >= 0:
+        return marked_sides(cell_at(row, amount_at))
+    return 0.0, 0.0
+
+
+def cell_at(row: list[str], index: int) -> str:
+    if index < 0 or index >= len(row):
+        return ""
+    return row[index]
+
+
+def plain_amount(text: str) -> float:
+    if not re.search(r"\d", text or ""):
+        return 0.0
+    cleaned = text.replace(",", "").replace("₹", "").replace("Rs.", "").replace("INR", "")
+    cleaned = re.sub(r"\(?\s*(?:cr|dr)\s*\)?", "", cleaned, flags=re.IGNORECASE)
+    cleaned = cleaned.strip().strip("()")
+    if cleaned.endswith("-") or cleaned.startswith("-"):
+        cleaned = cleaned.strip("-")
+    if cleaned in {"", "-", "—"}:
+        return 0.0
+    try:
+        return round(abs(float(cleaned)), 2)
+    except ValueError:
+        return 0.0
+
+
+def cell_balance(row: list[str], index: int) -> float | None:
+    text = cell_at(row, index).strip()
+    if not re.search(r"\d", text):
+        return None
+    value = plain_amount(text)
+    if re.search(r"\bdr\b", text, re.IGNORECASE) or text.endswith("-") or (text.startswith("(") and text.endswith(")")):
+        return -value
+    return value
+
+
+def marked_sides(text: str, default: str = "dr") -> tuple[float, float]:
+    value = plain_amount(text)
+    if value == 0:
+        return 0.0, 0.0
+    found = re.search(r"\(?\s*(cr|dr)\s*\)?", text, re.IGNORECASE)
+    marker = found.group(1).lower() if found else None
+    if text.strip().endswith("-") or (text.strip().startswith("(") and text.strip().endswith(")")):
+        marker = marker or "dr"
+    if marker == "cr" or (marker is None and default == "cr"):
+        return 0.0, value
+    return value, 0.0
+
+
+def money_value(text: str) -> float:
+    return float(text.replace(",", "").rstrip("-"))
+
+
+def money_matches(blob: str) -> list[re.Match[str]]:
+    found = []
+    for match in MONEY.finditer(blob):
+        if re.match(r"\.\d{2,4}\b", blob[match.end() : match.end() + 5]):
+            continue
+        found.append(match)
+    return found
+
+
+def amount_cluster(blob: str) -> list[re.Match[str]] | None:
+    matches = money_matches(blob)
+    if len(matches) < 2:
+        return None
+    cluster = [matches[-1]]
+    for item in reversed(matches[:-1]):
+        if is_amount_gap(blob[item.end() : cluster[0].start()]):
+            cluster.insert(0, item)
+            if len(cluster) == 3:
+                break
+        else:
+            break
+    if len(cluster) < 2:
+        return None
+    return cluster
+
+
+def is_amount_gap(between: str) -> bool:
+    return re.fullmatch(r"[\s|]*(?:\(?\s*(?:rs\.?|inr|cr|dr)\s*\)?)?[\s|]*", between, flags=re.IGNORECASE) is not None
+
+
+def amount_marker(blob: str, match: re.Match[str]) -> str | None:
+    if match.group().endswith("-"):
+        return "dr"
+    found = re.match(r"\s*\(?\s*(cr|dr)\b\)?", blob[match.end() : match.end() + 8], re.IGNORECASE)
+    if found:
+        return found.group(1).lower()
+    return None
+
+
+def signed_balance(blob: str, match: re.Match[str]) -> float:
+    value = money_value(match.group())
+    if match.group().endswith("-") or amount_marker(blob, match) == "dr":
+        return -value
+    return value
+
+
+def side_from_balance(narration: str, amount: float, balance: float, previous: float | None, marker: str | None = None) -> tuple[float, float]:
+    if previous is not None:
+        delta = round(balance - previous, 2)
+        if abs(delta - amount) <= 0.05:
+            return 0.0, amount
+        if abs(-delta - amount) <= 0.05:
+            return amount, 0.0
+    if marker == "cr":
+        return 0.0, amount
+    if marker == "dr":
+        return amount, 0.0
+    text = narration.lower()
+    if any(word in text for word in CREDIT_HINTS):
+        return 0.0, amount
+    if any(word in text for word in DEBIT_HINTS):
+        return amount, 0.0
+    return amount, 0.0
+
+
+def align_to_balance(rows: list[dict], opening: float | None) -> list[dict]:
+    previous = opening
+    aligned = []
+    for row in rows:
+        debit, credit, balance = row["debit"], row["credit"], row["balance"]
+        amount = round(debit or credit, 2)
+        if previous is not None and balance is not None and amount and (debit == 0 or credit == 0):
+            delta = round(balance - previous, 2)
+            if abs(delta - amount) <= 0.05:
+                debit, credit = 0.0, amount
+            elif abs(-delta - amount) <= 0.05:
+                debit, credit = amount, 0.0
+        aligned.append({**row, "debit": debit, "credit": credit, "category": "other_out" if debit else "other_in"})
+        if balance is not None:
+            previous = balance
+    return aligned
+
+
+def fully_tied(rows: list[dict], opening: float | None) -> bool:
+    previous = opening
+    checked = 0
+    for row in rows:
+        balance = row["balance"]
+        if balance is None:
+            return False
+        if previous is not None:
+            delta = round(balance - previous, 2)
+            moved = round(row["credit"] - row["debit"], 2)
+            if abs(delta - moved) > 0.05:
+                return False
+            checked += 1
+        previous = balance
+    needed = len(rows) if opening is not None else max(len(rows) - 1, 1)
+    return checked >= needed
+
+
+def chain_holds(rows: list[dict], opening: float | None) -> bool:
+    balances = [row["balance"] for row in rows if row["balance"] is not None]
+    if len(balances) < 4:
+        return True
+    previous = opening
+    breaks = 0
+    checked = 0
+    for row in rows:
+        balance = row["balance"]
+        if previous is not None and balance is not None:
+            checked += 1
+            delta = round(balance - previous, 2)
+            moved = round(row["credit"] - row["debit"], 2)
+            if abs(delta - moved) > 0.05:
+                breaks += 1
+        if balance is not None:
+            previous = balance
+    if breaks == 0:
+        return True
+    if checked < 4:
+        return False
+    return breaks / checked <= 0.08
+
+
 async def extract_rows(text: str) -> list[dict]:
+    local = parse_statement_rows(text)
+    if len(local) >= 5:
+        note(f"read {len(local)} rows from the statement layout")
+        for row in local:
+            apply_narration_model(row)
+        local.sort(key=lambda row: row["date"])
+        return local
     parts = chunks(text, CHUNK_SIZE)
     workers = min(WORKERS, len(parts)) or 1
-    note(f"statement sections {len(parts)} on {workers} threads")
-    loop = asyncio.get_running_loop()
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        batches = await asyncio.gather(*(loop.run_in_executor(pool, read_part, part) for part in parts))
+    note(f"statement sections {len(parts)} at once")
+    limits = httpx.Limits(max_connections=workers, max_keepalive_connections=workers)
+    semaphore = asyncio.Semaphore(workers)
+    async with httpx.AsyncClient(timeout=90, limits=limits) as client:
+        async def one(index: int, part: str) -> list[dict]:
+            async with semaphore:
+                rows = await read_part(client, part)
+                note(f"section {index} rows {len(rows)}")
+                return rows
+
+        batches = await asyncio.gather(*(one(index, part) for index, part in enumerate(parts, start=1)))
     rows = []
     seen = set()
     for batch in batches:
@@ -113,20 +619,53 @@ async def extract_rows(text: str) -> list[dict]:
     return rows
 
 
-def read_part(part: str) -> list[dict]:
+async def read_part(client: httpx.AsyncClient, part: str) -> list[dict]:
     try:
-        data = complete(SYSTEM, "Statement excerpt:\n" + part)
+        data = await complete_async(client, SYSTEM, "Statement excerpt:\n" + part)
     except json.JSONDecodeError:
         if len(part) < 2500:
             raise ValueError("A section of the statement came back incomplete. Export a CSV from the bank and send that.") from None
         mid = split_at(part)
-        return read_part(part[:mid]) + read_part(part[mid:])
+        left, right = await asyncio.gather(read_part(client, part[:mid]), read_part(client, part[mid:]))
+        return left + right
     rows = []
     for item in data.get("rows") or []:
         row = clean_row(item)
         if row:
             rows.append(row)
     return rows
+
+
+async def complete_async(client: httpx.AsyncClient, system: str, user: str) -> dict:
+    key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+    if not key:
+        raise RuntimeError("OPENROUTER_API_KEY is missing from backend/.env")
+    response = None
+    for attempt in range(4):
+        response = await client.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+            json={
+                "model": MODEL,
+                "temperature": 0,
+                "response_format": {"type": "json_object"},
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+            },
+        )
+        if response.status_code != 429 or attempt == 3:
+            break
+        await asyncio.sleep(1.2 * (attempt + 1))
+    if response is None:
+        raise RuntimeError("The model call failed.")
+    if response.status_code in {401, 403}:
+        raise RuntimeError("The model key was rejected. Put a live key in backend/.env.")
+    if response.status_code >= 400:
+        raise RuntimeError(f"The model call failed ({response.status_code}).")
+    content = response.json()["choices"][0]["message"]["content"]
+    return json.loads(content)
 
 
 def split_at(part: str) -> int:
@@ -139,13 +678,36 @@ def split_at(part: str) -> int:
 
 def apply_narration_model(row: dict) -> None:
     guess = predict_category(row["description"], row["debit"], row["credit"])
-    if guess is None:
-        return
-    category, confidence = guess
-    if confidence >= TRUST:
-        row["category"] = category
-        return
-    learn_from_teacher(row["description"], row["category"], row["debit"], row["credit"], confidence)
+    if guess is not None:
+        category, confidence = guess
+        if confidence >= TRUST:
+            row["category"] = category
+            return
+        learn_from_teacher(row["description"], row["category"], row["debit"], row["credit"], confidence)
+    fallback = keyword_category(row)
+    if fallback:
+        row["category"] = fallback
+
+
+def keyword_category(row: dict) -> str | None:
+    text = row["description"].lower()
+    credit = row["credit"]
+    debit = row["debit"]
+    if "int.pd" in text:
+        return "other_in" if credit else "other_out"
+    if "cashdep chgs" in text or "chgs" in text and debit and debit < 1000:
+        return "bounce_charge"
+    if debit and any(name in text for name in ("swiggy", "zomato", "zepto", "blinkit", "dominos", "bigbasket")):
+        return "personal"
+    if debit and ("upi/" in text or "paid via" in text):
+        return "personal"
+    if credit and "fund transferinf" in text.replace(" ", ""):
+        return "salary"
+    if credit and "upi/" in text:
+        return "transfer_in"
+    if credit and ("by cash" in text or "cash dep" in text):
+        return "cash_in"
+    return None
 
 
 def chunks(text: str, size: int = CHUNK_SIZE) -> list[str]:
@@ -202,7 +764,14 @@ def money(value) -> float:
 
 
 def normalize_date(value: str) -> str:
-    value = value.strip().replace("/", "-")
+    value = value.strip()
+    named = re.match(r"(\d{1,2})[\s-]([A-Za-z]{3,9})[\s-](\d{2,4})", value)
+    if named and named.group(2).lower() in MONTHS:
+        year = int(named.group(3))
+        if year < 100:
+            year += 2000 if year < 70 else 1900
+        return f"{year:04d}-{MONTHS[named.group(2).lower()]:02d}-{int(named.group(1)):02d}"
+    value = value.replace("/", "-")
     parts = value.split("-")
     if len(parts) == 3 and len(parts[0]) == 4:
         return f"{parts[0]}-{parts[1].zfill(2)}-{parts[2].zfill(2)}"

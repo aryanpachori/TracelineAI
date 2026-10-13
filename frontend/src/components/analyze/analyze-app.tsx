@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { Report } from "@/components/analyze/report";
+import { OpeningFile } from "@/components/analyze/reading-loader";
 import { UploadPanel } from "@/components/analyze/upload-panel";
 import { analyze } from "@/lib/analyze";
 import { parseStatement } from "@/lib/parseStatement";
@@ -47,6 +48,10 @@ export function AnalyzeApp() {
       setFileName(SAMPLE_CASE.fileName);
       setCaseRef(SAMPLE_CASE.reference);
       setError(null);
+    } else {
+      setRows(null);
+      setReading(null);
+      setFileName("");
     }
     setBooted(true);
   }, [params]);
@@ -116,7 +121,7 @@ export function AnalyzeApp() {
           </Link>
         </div>
       </header>
-      {waitingForSample ? <p className="px-5 py-10">Opening the file…</p> : null}
+      {waitingForSample ? <OpeningFile fileName={SAMPLE_CASE.fileName} /> : null}
       {!waitingForSample ? (
       <AnimatePresence mode="wait">
         {analysis ? (

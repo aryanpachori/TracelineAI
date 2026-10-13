@@ -47,3 +47,13 @@ export function ReadingLoader({ fileName }: { fileName?: string }) {
     </div>
   );
 }
+
+export function OpeningFile({ fileName }: { fileName?: string }) {
+  return (
+    <div className="mx-auto max-w-[760px] px-5 py-12">
+      <div className="border border-rule bg-white px-5 py-8">
+        <ReadingLoader fileName={fileName} />
+      </div>
+    </div>
+  );
+}

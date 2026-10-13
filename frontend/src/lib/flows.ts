@@ -14,7 +14,7 @@ const RAILS = ["UPI", "NACH", "NEFT", "IMPS", "RTGS", "Cash", "Other"] as const;
 
 export function railOf(description: string) {
   const text = description.toUpperCase();
-  if (/^(UPI|PHONEPE|GPAY|PAYTM)\b/.test(text) || text.includes("GOOGLE PAY")) return "UPI";
+  if (text.includes("UPI/") || text.includes("/UPI") || text.includes("PHONEPE") || text.includes("GPAY") || text.includes("GOOGLE PAY")) return "UPI";
   if (/^(NACH|ECS|ACH)\b/.test(text)) return "NACH";
   if (text.startsWith("NEFT")) return "NEFT";
   if (text.startsWith("RTGS")) return "RTGS";

@@ -88,6 +88,10 @@ def choose_grade(metrics: dict) -> dict:
         prompt += f"\n\nThe trained grade model already chose {ml_letter}. Keep that letter."
     raw = complete("You grade an Indian MSME current-account file. Stay inside the given bands.", prompt)
     letter = ml_letter if ml_letter in GRADES else str(raw.get("letter") or "C").upper()
+    if float(metrics.get("avgEarned") or 0) < 8000 or int(metrics.get("months") or 0) < 6:
+        letter = "E"
+    elif float(metrics.get("cashLeft") or 0) < 0 and letter in {"A", "B", "C"}:
+        letter = "D"
     if letter not in GRADES:
         letter = "C"
     band = GRADES[letter]
@@ -97,12 +101,18 @@ def choose_grade(metrics: dict) -> dict:
     except (TypeError, ValueError):
         points = (low + high) // 2
     points = min(high, max(low, points))
+    summary = str(raw.get("summary") or "").strip()[:500]
+    if letter in {"D", "E"} and any(word in summary.lower() for word in ("strong", "healthy", "solid")):
+        summary = (
+            "Earned inflow on this statement is thin, and cash left after operations is not positive. "
+            "A new facility is not a fit on these terms."
+        )
     rates = band["businessRate"]
     return {
         "letter": letter,
         "points": points,
         "label": band["label"],
-        "summary": str(raw.get("summary") or "").strip()[:500],
+        "summary": summary,
         "rates": {
             "business": rates,
             "topup": rates,

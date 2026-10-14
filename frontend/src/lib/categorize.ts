@@ -40,7 +40,7 @@ export function categorize(txn: TxnInput): Category {
 }
 
 const SKIP = new Set([
-  "upi", "imps", "neft", "rtgs", "nach", "ach", "ecs", "pos", "ecom", "pur", "p2a", "p2m", "p2v", "p2p",
+  "upi", "imps", "neft", "rtgs", "nach", "ach", "ecs", "pos", "ecom", "pur", "p2a", "p2m", "p2v", "p2p", "dr", "cr",
   "cradj", "nbsm", "brn", "atm", "sak", "sb", "paid", "payvia", "paymen", "pay", "via", "rem", "sent", "usi",
   "no", "to", "collect", "collec", "payment", "ybs", "ltd", "limited", "bank",
 ]);
@@ -98,8 +98,9 @@ export function partyKind(description: string, category?: string) {
   if (category === "self_in" || category === "self_out" || /\bself\b|own account|own a\/c/.test(text)) return "Self";
   if (/int\.pd|interest paid|chrgs|charges|gst/.test(text)) return "Bank";
   if (/cash dep|^atm|atm-cash|atm cash/.test(text)) return "Cash";
-  if (/@|upi\/p2a|imps\/p2a|upi\/p2p/.test(text)) return /autopay|p2m|merchant/.test(text) ? "Merchant" : "Person";
-  if (/upi\/p2m|pos\/|^ecom|nach|mandate|\bupi\b/.test(text)) return /\bupi\b/.test(text) && !/p2m|merchant/.test(text) ? "Person" : "Merchant";
+  if (/@/.test(text)) return /autopay|p2m|merchant/.test(text) ? "Merchant" : "Person";
+  if (/upi\/p2a|imps\/p2a|upi\/p2p/.test(text)) return "Person";
+  if (/upi\/p2m|pos\/|^ecom|nach|mandate/.test(text)) return "Merchant";
   return "Transfer";
 }
 

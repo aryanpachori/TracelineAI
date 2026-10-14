@@ -272,7 +272,9 @@ function SectionTitle({ title, aside }: { title: string; aside?: ReactNode }) {
 }
 
 function Verdict({ analysis, policy }: { analysis: Analysis; policy: Policy }) {
+  const { open, setOpen } = useOpen();
   const { grade, capacity, summary } = analysis;
+  const habits = analysis.reasons.filter((item) => item.code.startsWith("HABIT_"));
   return (
     <div>
       <SectionTitle title="Repayment view" aside={<span className="text-sm text-muted">AI assessment</span>} />
@@ -300,6 +302,25 @@ function Verdict({ analysis, policy }: { analysis: Analysis; policy: Policy }) {
             </span>
           </p>
           <p className="mt-4 max-w-[46rem]">{summary}</p>
+          {habits.length ? (
+            <ul className="mt-5 max-w-[46rem] border-t border-rule">
+              {habits.map((item) => (
+                <li key={item.code} className="border-b border-rule">
+                  <button
+                    type="button"
+                    className={`block w-full py-2 text-left ${openMatch(open, { kind: "reason", code: item.code }) ? "picked px-2" : ""}`}
+                    onClick={() => setOpen({ kind: "reason", code: item.code })}
+                  >
+                    <span className={`text-sm ${item.severity === "good" ? "text-pine" : item.severity === "breach" ? "text-rust" : "text-brass"}`}>
+                      {item.severity === "good" ? "Strength" : item.severity === "breach" ? "Attention" : "Watch"}
+                    </span>
+                    <span className="mt-1 block font-medium">{item.title}</span>
+                    <span className="mt-1 block text-sm">{item.detail}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : null}
           {analysis.payability.mode === "cashflow" ? (
             <dl className="mt-5 grid max-w-[46rem] grid-cols-2 gap-px border border-rule bg-rule sm:grid-cols-4">
               <CashCell label="Comes in" value={analysis.payability.workAvg} note={`Middle month ${inrCompact(analysis.payability.workIn)}`} how="Average monthly cash from work: customer receipts, salary, inbound transfers, and cash deposits. Self-transfers, loans, interest, investments, and a credit matched by a similar debit within 3 days are left out." />
@@ -550,10 +571,10 @@ function Averages({ analysis }: { analysis: Analysis }) {
     },
     {
       id: "obligations",
-      label: "EMI + rent",
+      label: "Fixed debts",
       value: pct(m.obligationRatio),
       note: cashflow ? "of cash from work" : "of average earned inflow",
-      how: cashflow ? "EMI and rent, divided by average cash from work." : "EMI and rent, divided by average earned inflow.",
+      how: "EMI, rent, card payments, and pay-later, divided by inflows. A formal file uses business receipts and salary. A file without that salary uses cash from work.",
     },
     { id: "bounces", label: "Returns, 6 months", value: String(m.bounces6m), note: `charges ${inr(m.bounceCharges, 0)}`, how: "Returned cheques in the last 6 months. The charge line is the bank fee on those returns." },
     { id: "volatility", label: "Volatility", value: m.volatility.toFixed(2), note: `recent quarter ${signedPct(m.trend)}`, how: "How far each month's earned inflow sits from the average. The recent quarter compares the last 3 months with the 3 before." },
@@ -729,8 +750,8 @@ function Reasons({ analysis }: { analysis: Analysis }) {
             >
               <span className="flex flex-wrap items-baseline justify-between gap-2">
                 <span className="font-medium">{item.title}</span>
-                <span className={`text-sm ${item.severity === "breach" ? "text-rust" : item.severity === "watch" ? "text-brass" : "text-muted"}`}>
-                  {item.severity === "breach" ? "Attention" : item.severity === "watch" ? "Watch" : "Note"}
+                <span className={`text-sm ${item.severity === "good" ? "text-pine" : item.severity === "breach" ? "text-rust" : item.severity === "watch" ? "text-brass" : "text-muted"}`}>
+                  {item.severity === "good" ? "Strength" : item.severity === "breach" ? "Attention" : item.severity === "watch" ? "Watch" : "Note"}
                 </span>
               </span>
               <span className="mt-1 block text-sm">{item.detail}</span>
@@ -1033,7 +1054,7 @@ const FIELDS: {
   step: number;
   format: (value: number) => string;
 }[] = [
-  { key: "maxObligationRatio", label: "EMI + rent, max share of earned inflow", min: 0.1, max: 0.8, step: 0.01, format: (value) => pct(value) },
+  { key: "maxObligationRatio", label: "Fixed debts, max share of inflows", min: 0.1, max: 0.8, step: 0.01, format: (value) => pct(value) },
   { key: "maxBounces6m", label: "Returns allowed in 6 months", min: 0, max: 6, step: 1, format: (value) => String(value) },
   { key: "minMonths", label: "Minimum months", min: 3, max: 18, step: 1, format: (value) => String(value) },
   { key: "maxConcentration", label: "Largest payer, max share", min: 0.2, max: 0.9, step: 0.01, format: (value) => pct(value) },

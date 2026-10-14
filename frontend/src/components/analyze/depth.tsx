@@ -515,7 +515,7 @@ function metricView(analysis: Analysis, id: string): View {
     const ids = id === "emi" ? ["emi"] : id === "rent" ? ["rent"] : ["emi", "rent"];
     return {
       title: id === "emi" ? "EMI" : id === "rent" ? "Rent" : "EMI and rent",
-      reading: `EMI and rent are ${pct(metrics.obligationRatio)} of average earned inflow.`,
+      reading: `EMI, rent, card payments, and pay-later are ${pct(metrics.obligationRatio)} of inflows.`,
       facts: [{ label: "Share of inflow", value: pct(metrics.obligationRatio) }],
       txnIds: byCategory(ids),
     };
@@ -577,7 +577,8 @@ function metricView(analysis: Analysis, id: string): View {
   return empty("This figure");
 }
 
-function severityLabel(severity: "info" | "watch" | "breach") {
+function severityLabel(severity: "good" | "info" | "watch" | "breach") {
+  if (severity === "good") return "Strength";
   if (severity === "breach") return "Attention";
   if (severity === "watch") return "Watch";
   return "Note";

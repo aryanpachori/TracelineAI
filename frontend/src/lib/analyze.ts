@@ -54,10 +54,13 @@ export function analyze(inputs: TxnInput[], policy: Policy, reading?: AiReading 
         })
       : built;
   const base = buildMetrics(txns, months);
-  const metrics =
-    cash.mode === "cashflow"
+  const habits = spendHabits(txns, months, cash.mode === "cashflow", policy.surplusShare);
+  const metrics = {
+    ...(cash.mode === "cashflow"
       ? { ...base, topShare: cash.topShare, topName: cash.topName, nonEarnedShare: cash.asideShare }
-      : base;
+      : base),
+    obligationRatio: habits.burdenRatio,
+  };
   const integrity = buildIntegrity(txns, metrics.months, policy.minMonths);
   const local = score(metrics, integrity, policy);
   const grade = cash.mode === "cashflow" ? local : applyReading(local, reading);
@@ -87,8 +90,8 @@ export function analyze(inputs: TxnInput[], policy: Policy, reading?: AiReading 
     cash.mode === "cashflow" ? { commitAlreadyInCash: true, receipt: (txn) => cash.workIds.has(txn.id) } : undefined,
   );
   const groups = buildGroups(txns, months);
-  const reasons = buildReasons(txns, months, metrics, policy, integrity, flows, payability);
-  const capacity = buildCapacity(metrics, policy, flows.extraCommit, cash.mode === "cashflow");
+  const reasons = buildReasons(txns, months, metrics, policy, integrity, flows, payability, habits);
+  const capacity = buildCapacity(metrics, policy, flows.extraCommit, habits);
   const summary =
     cash.mode === "cashflow" || !reading?.summary
       ? writeSummary(metrics, capacity, grade, policy, payability)
@@ -464,19 +467,196 @@ function dayStamp(iso: string) {
   return Number.isNaN(time) ? 0 : Math.floor(time / 86_400_000);
 }
 
-function buildCapacity(metrics: Analysis["metrics"], policy: Policy, extraCommit: number, cashflow = false) {
-  const room = Math.max(0, metrics.medianCashAfterOps - (cashflow ? 0 : extraCommit));
-  const monthly = room * policy.surplusShare;
+const BASIC_GROUPS = new Set(["rent", "food", "fuel", "utilities", "tax", "healthcare", "insurance", "suppliers"]);
+const LIFESTYLE_GROUPS = new Set(["shopping", "travel", "subscriptions", "cards"]);
+const UNCOVERED_GROUPS = new Set(["shopping", "travel", "cards"]);
+const LENDER = /bajaj|bflautopay|\bbfl\b|kreditbee|\bnavi\b|\bslice\b|lazypay|\bsimpl\b|home\s*credit|moneyview|earlysalary|postpe/i;
+const SKIP_PAYER = new Set(["unknown", "interest", "cash deposit", "atm"]);
+
+type SpendHabits = {
+  cashflow: boolean;
+  burdenRatio: number;
+  burdenIds: string[];
+  lifestyleShare: number;
+  judged: boolean;
+  uncoveredMonthly: number;
+  pledge: number;
+  factor: number;
+  lifestyleIds: string[];
+  basicIds: string[];
+  repeatIds: string[];
+  cashShare: number;
+  cashIds: string[];
+};
+
+function spendHabits(txns: Txn[], months: MonthPoint[], cashflow: boolean, surplusShare: number): SpendHabits {
+  const incomeBase = months.reduce((sum, month) => sum + month.earned, 0);
+  const burdenIds: string[] = [];
+  let burden = 0;
+  let basics = 0;
+  let lifestyle = 0;
+  let uncovered = 0;
+  const lifestyleIds: string[] = [];
+  const basicIds: string[] = [];
+  let cashOut = 0;
+  const cashIds: string[] = [];
+  let totalOut = 0;
+
+  txns.forEach((txn) => {
+    if (txn.debit <= 0) return;
+    totalOut += txn.debit;
+    const group = groupOf(txn);
+    const lender = LENDER.test(txn.description) && group.id !== "food" && group.id !== "subscriptions" && group.id !== "utilities";
+    const debt = group.id === "emi" || group.id === "rent" || group.id === "cards" || txn.category === "emi" || txn.category === "rent" || lender;
+    if (debt) {
+      burden += txn.debit;
+      burdenIds.push(txn.id);
+    }
+    if (BASIC_GROUPS.has(group.id)) {
+      basics += txn.debit;
+      basicIds.push(txn.id);
+    }
+    if (LIFESTYLE_GROUPS.has(group.id)) {
+      lifestyle += txn.debit;
+      lifestyleIds.push(txn.id);
+    }
+    const alreadyInCashLeft = txn.category === "supplier" || txn.category === "utilities" || txn.category === "tax" || txn.category === "emi" || txn.category === "rent" || txn.category === "bounce_charge";
+    if (UNCOVERED_GROUPS.has(group.id) && !alreadyInCashLeft) uncovered += txn.debit;
+    if (group.id === "cash") {
+      cashOut += txn.debit;
+      cashIds.push(txn.id);
+    }
+  });
+
+  const judgedTotal = basics + lifestyle;
+  const judged = judgedTotal >= 2000;
+  const lifestyleShare = judged ? lifestyle / judgedTotal : 0;
+  const burdenRatio = incomeBase > 0 ? burden / incomeBase : burden > 0 ? 1 : 0;
+  let lifestyleFactor = 1;
+  if (judged && lifestyleShare >= 0.55) lifestyleFactor = 0.6;
+  else if (judged && lifestyleShare >= 0.35) lifestyleFactor = 0.75;
+  else if (judged && lifestyleShare >= 0.2) lifestyleFactor = 0.9;
+  let debtFactor = 1;
+  if (burdenRatio >= 0.45) debtFactor = 0.6;
+  else if (burdenRatio >= 0.3) debtFactor = 0.8;
+  const factor = Math.max(0.35, lifestyleFactor * debtFactor);
+  const payers = new Map<string, { months: Set<string>; amount: number; ids: string[] }>();
+  txns.forEach((txn) => {
+    if (txn.credit <= 0) return;
+    if (txn.category === "self_in" || txn.category === "loan_in" || txn.category === "bounce_reversal") return;
+    const name = txn.counterparty.trim();
+    if (!name || SKIP_PAYER.has(name.toLowerCase())) return;
+    const slot = payers.get(name) ?? { months: new Set<string>(), amount: 0, ids: [] };
+    slot.months.add(txn.date.slice(0, 7));
+    slot.amount += txn.credit;
+    slot.ids.push(txn.id);
+    payers.set(name, slot);
+  });
+  const repeatIds: string[] = [];
+  payers.forEach((slot) => {
+    if (slot.months.size >= 2 && slot.amount >= 2000) repeatIds.push(...slot.ids);
+  });
+
+  return {
+    cashflow,
+    burdenRatio,
+    burdenIds,
+    lifestyleShare,
+    judged,
+    uncoveredMonthly: uncovered / Math.max(months.length, 1),
+    pledge: surplusShare * factor,
+    factor,
+    lifestyleIds,
+    basicIds,
+    repeatIds,
+    cashShare: totalOut > 0 ? cashOut / totalOut : 0,
+    cashIds,
+  };
+}
+
+function pushHabitFlags(reasons: Reason[], habits: SpendHabits, policy: Policy) {
+  if (habits.judged && habits.lifestyleShare < 0.2) {
+    reasons.push({
+      code: "HABIT_BASICS",
+      severity: "good",
+      title: "Spending stays on basics",
+      detail: habits.cashflow
+        ? "Rent, food, fuel, utilities, and suppliers are the spending. Flows are modest, and the new EMI is not cut for lifestyle."
+        : "Rent, food, fuel, utilities, and suppliers are the spending. The new EMI is not cut for lifestyle.",
+      txnIds: habits.basicIds,
+    });
+  }
+  if (habits.burdenIds.length > 0 && habits.burdenRatio <= 0.2) {
+    reasons.push({
+      code: "HABIT_DEBT_OK",
+      severity: "good",
+      title: "Existing debts fit this cashflow",
+      detail: `EMI, rent, card payments, and pay-later are ${Math.round(habits.burdenRatio * 100)}% of inflows.`,
+      txnIds: habits.burdenIds,
+    });
+  }
+  if (habits.judged && habits.lifestyleShare >= 0.35) {
+    reasons.push({
+      code: "HABIT_LIFESTYLE",
+      severity: "breach",
+      title: "Spending leans to shopping and lifestyle",
+      detail: `Shopping, travel, subscriptions, and cards are ${Math.round(habits.lifestyleShare * 100)}% of judged spending. The new EMI uses ${Math.round(habits.pledge * 100)}% of cash left instead of ${Math.round(policy.surplusShare * 100)}%.`,
+      txnIds: habits.lifestyleIds,
+    });
+  }
+  if (habits.burdenRatio >= 0.3) {
+    reasons.push({
+      code: "HABIT_DEBT",
+      severity: "breach",
+      title: "Debts are heavy for this cashflow",
+      detail: `EMI, rent, card payments, and pay-later are ${Math.round(habits.burdenRatio * 100)}% of inflows. The facility is cut because those instalments already strain the account.`,
+      txnIds: habits.burdenIds,
+    });
+  }
+  if (habits.cashShare >= 0.3) {
+    reasons.push({
+      code: "HABIT_CASH",
+      severity: "watch",
+      title: "A large share leaves as cash",
+      detail: "ATM withdrawals are at least 30% of outflow, so the spending mix is only partly visible.",
+      txnIds: habits.cashIds,
+    });
+  }
+  if (habits.repeatIds.length > 0) {
+    reasons.push({
+      code: "HABIT_REPEAT",
+      severity: "good",
+      title: "Receipts from the same names repeat",
+      detail: habits.cashflow
+        ? "The same payer shows up in two or more months. That stands in for a salary line."
+        : "The same payer shows up in two or more months.",
+      txnIds: habits.repeatIds,
+    });
+  }
+}
+
+function buildCapacity(metrics: Analysis["metrics"], policy: Policy, extraCommit: number, habits: SpendHabits) {
+  const lifestyleOff = habits.cashflow ? 0 : habits.uncoveredMonthly;
+  const room = Math.max(0, metrics.medianCashAfterOps - (habits.cashflow ? 0 : extraCommit) - lifestyleOff);
+  const monthly = room * habits.pledge;
   const principal = principalFromEmi(monthly, policy.annualRate, policy.tenureMonths);
-  const viable = room > 0 && (cashflow || metrics.avgEarned >= policy.minAvgInflow * 0.5);
+  const viable = room > 0 && (habits.cashflow || metrics.avgEarned >= policy.minAvgInflow * 0.5);
+  const lead = habits.cashflow
+    ? "There is no salary on this file. The EMI is a share of the cash left in a typical month after own-account transfers are removed and after the spending already on the statement."
+    : "Capacity is a share of cash left after EMI, rent, suppliers, utilities, tax, and return charges, with autopays and subscriptions taken off. The band is the loan that payment would carry at the rate and tenure below.";
+  const cuts: string[] = [];
+  if (lifestyleOff > 0) {
+    cuts.push(`Shopping, travel, and card bills of ${inr(lifestyleOff, 0)} a month come off cash left before the EMI is sized.`);
+  }
+  if (habits.factor < 0.999) {
+    cuts.push(`The new EMI uses ${Math.round(habits.pledge * 100)}% of cash left instead of ${Math.round(policy.surplusShare * 100)}%.`);
+  }
   return {
     monthly: viable ? monthly : 0,
     principal: viable ? principal : 0,
     bandLow: viable ? principal * 0.75 : 0,
     bandHigh: viable ? principal : 0,
-    basis: cashflow
-      ? "There is no salary on this file. The EMI is a share of the cash left in a typical month after own-account transfers are removed and after the spending already on the statement."
-      : "Capacity is a share of cash left after EMI, rent, suppliers, utilities, tax, and return charges, with autopays and subscriptions taken off. The band is the loan that payment would carry at the rate and tenure below.",
+    basis: cuts.length ? `${lead} ${cuts.join(" ")}` : lead,
   };
 }
 
@@ -511,10 +691,10 @@ function score(metrics: Analysis["metrics"], integrity: IntegrityCheck[], policy
   const ratioGap = metrics.obligationRatio - policy.maxObligationRatio;
   add(
     "obligations",
-    `EMI + rent within ${Math.round(policy.maxObligationRatio * 100)}% of earned inflow`,
+    `Fixed debts within ${Math.round(policy.maxObligationRatio * 100)}% of inflows`,
     metrics.obligationRatio > policy.maxObligationRatio,
     -22,
-    `${Math.round(metrics.obligationRatio * 100)}% now`,
+    `${Math.round(metrics.obligationRatio * 100)}% now. Counts EMI, rent, card payments, and pay-later.`,
   );
   if (ratioGap <= 0 && ratioGap > -0.05 && metrics.obligationRatio > 0) {
     rules.push({
@@ -691,6 +871,7 @@ function buildReasons(
   integrity: IntegrityCheck[],
   flows: FlowReport,
   payability: Analysis["payability"],
+  habits: SpendHabits,
 ): Reason[] {
   const reasons: Reason[] = [];
   const cashflow = payability.mode === "cashflow";
@@ -728,9 +909,9 @@ function buildReasons(
     reasons.push({
       code: "OBLIGATION_RATIO",
       severity: "breach",
-      title: "Fixed obligations are heavy",
-      detail: `EMI and rent are ${Math.round(metrics.obligationRatio * 100)}% of average earned inflow. The cap is ${Math.round(policy.maxObligationRatio * 100)}%.`,
-      txnIds: ids("emi", "rent"),
+      title: "Fixed debts are heavy",
+      detail: `EMI, rent, card payments, and pay-later are ${Math.round(metrics.obligationRatio * 100)}% of inflows. The cap is ${Math.round(policy.maxObligationRatio * 100)}%.`,
+      txnIds: habits.burdenIds,
     });
   }
 
@@ -932,8 +1113,9 @@ function buildReasons(
   }
 
   pushSpendFlags(reasons, txns);
+  pushHabitFlags(reasons, habits, policy);
 
-  const order = { breach: 0, watch: 1, info: 2 };
+  const order: Record<Reason["severity"], number> = { breach: 0, watch: 1, good: 2, info: 3 };
   return reasons.sort((a, b) => order[a.severity] - order[b.severity]);
 }
 

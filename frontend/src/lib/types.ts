@@ -84,7 +84,7 @@ export type Reason = {
   code: string;
   title: string;
   detail: string;
-  severity: "info" | "watch" | "breach";
+  severity: "good" | "info" | "watch" | "breach";
   txnIds: string[];
 };
 

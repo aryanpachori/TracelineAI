@@ -15,7 +15,7 @@ const RAILS = ["UPI", "NACH", "NEFT", "IMPS", "RTGS", "Cash", "Other"] as const;
 
 export function railOf(description: string) {
   const text = description.toUpperCase();
-  if (text.includes("UPI/") || text.includes("/UPI") || text.includes("PHONEPE") || text.includes("GPAY") || text.includes("GOOGLE PAY")) return "UPI";
+  if (text.includes("UPI/") || text.includes("/UPI") || text.startsWith("UPI-") || text.startsWith("UPI ") || text.includes("@") || text.includes("PHONEPE") || text.includes("GPAY") || text.includes("GOOGLE PAY")) return "UPI";
   if (/^(NACH|ECS|ACH)\b/.test(text)) return "NACH";
   if (text.startsWith("NEFT")) return "NEFT";
   if (text.startsWith("RTGS")) return "RTGS";
@@ -42,7 +42,7 @@ export function buildFlows(
 ): FlowReport {
   const series = detectSeries(txns, months.map((month) => month.key));
   const rails = detectRails(txns);
-  const monthPatterns = detectMonthPatterns(txns, months, series);
+  const monthPatterns = detectMonthPatterns(txns, months);
   const upiIn = rails.find((rail) => rail.rail === "UPI")?.inflow ?? 0;
   const isReceipt = options?.receipt ?? ((txn: Txn) => txn.category === "business_in" || txn.category === "salary");
   const earnedCredits = txns.filter((txn) => isReceipt(txn)).reduce((sum, txn) => sum + txn.credit, 0);
@@ -118,7 +118,7 @@ function detectSeries(txns: Txn[], monthKeys: string[]): RecurringSeries[] {
         cluster.every((txn) => txn.category !== "supplier" && txn.category !== "transfer_out" && txn.category !== "personal");
       const resolved: SeriesKind | null = explicit && (kind !== "autopay" || dated || seen.size < 3) ? kind : repeat ? "repeat" : null;
       if (!resolved) return;
-      if (seen.size < 2) return;
+      if (seen.size < 2 && resolved !== "emi" && resolved !== "autopay" && resolved !== "subscription") return;
       if (!explicit && seen.size < 4) return;
 
       const orderedMonths = monthKeys.filter((key) => {
@@ -207,13 +207,11 @@ function detectRails(txns: Txn[]) {
 
 type RailMixSeed = { rail: string; inflow: number; outflow: number; inCount: number; outCount: number };
 
-function detectMonthPatterns(txns: Txn[], months: MonthPoint[], series: RecurringSeries[]): FlowReport["months"] {
-  const kindById = new Map<string, SeriesKind>();
-  series.forEach((item) => item.txnIds.forEach((id) => kindById.set(id, item.kind)));
+function detectMonthPatterns(txns: Txn[], months: MonthPoint[]): FlowReport["months"] {
   return months.map((month) => {
     const rows = txns.filter((txn) => txn.date.startsWith(month.key));
     const sumKind = (kind: SeriesKind) =>
-      rows.filter((txn) => kindById.get(txn.id) === kind).reduce((total, txn) => total + txn.debit, 0);
+      rows.filter((txn) => txn.debit > 0 && explicitKind(txn) === kind).reduce((total, txn) => total + txn.debit, 0);
     return {
       key: month.key,
       label: month.label,

@@ -58,7 +58,7 @@ export function HomePage({ preview }: { preview: Preview }) {
                   <dd className="num">{inrCompact(preview.cashAfterOps)} / mo</dd>
                 </div>
                 <div>
-                  <dt className="text-muted">EMI + rent</dt>
+                  <dt className="text-muted">Fixed debts</dt>
                   <dd className="num">{pct(preview.obligationRatio)} of inflow</dd>
                 </div>
                 <div>

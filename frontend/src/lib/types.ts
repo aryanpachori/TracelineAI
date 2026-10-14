@@ -26,6 +26,7 @@ export type TxnInput = {
   credit: number;
   balance: number | null;
   category?: Category;
+  key?: string;
 };
 
 export type AiReading = {
@@ -86,6 +87,24 @@ export type Reason = {
   detail: string;
   severity: "good" | "info" | "watch" | "breach";
   txnIds: string[];
+};
+
+export type JudgmentNote = {
+  code: string;
+  title: string;
+  detail: string;
+  severity: Reason["severity"];
+  keys: string[];
+};
+
+export type Judgment = {
+  parties: { name: string; aliases: string[]; keys: string[] }[];
+  asideKeys: string[];
+  obligationKeys: string[];
+  investingKeys: string[];
+  bindingMonth: string | null;
+  missingMonths: string[];
+  notes: JudgmentNote[];
 };
 
 export type RuleHit = {

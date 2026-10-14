@@ -3,17 +3,18 @@
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { useMemo, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Report } from "@/components/analyze/report";
 import { UploadPanel } from "@/components/analyze/upload-panel";
 import { analyze } from "@/lib/analyze";
 import { parseStatement } from "@/lib/parseStatement";
 import { DEFAULT_CHART, DEFAULT_WIDGETS, STANDARD_POLICY } from "@/lib/policy";
 import { SAMPLE_CASE, sampleCsv } from "@/lib/sample";
-import type { AiReading, ChartConfig, Policy, TxnInput, WidgetSetting } from "@/lib/types";
+import type { AiReading, ChartConfig, Judgment, Policy, TxnInput, WidgetSetting } from "@/lib/types";
 
 const STORAGE_KEY = "traceline-desk-v1";
 const ANALYZE_URL = process.env.NEXT_PUBLIC_ANALYZE_URL || "http://127.0.0.1:8001/analyze";
+const JUDGE_URL = ANALYZE_URL.replace(/\/analyze$/, "/judge");
 const DESK_EVENT = "traceline-desk";
 
 type Desk = {
@@ -55,30 +56,66 @@ export function AnalyzeApp() {
   const [trackedSample, setTrackedSample] = useState(sampleOn);
   const [rows, setRows] = useState<TxnInput[] | null>(() => (sampleOn ? parseStatement(sampleCsv()).rows : null));
   const [reading, setReading] = useState<AiReading | null>(null);
+  const [judgment, setJudgment] = useState<Judgment | null>(null);
+  const [declaredSales, setDeclaredSales] = useState<number | null>(null);
+  const [declaredEmi, setDeclaredEmi] = useState<number | null>(null);
   const [fileName, setFileName] = useState(() => (sampleOn ? SAMPLE_CASE.fileName : ""));
   const [caseRef, setCaseRef] = useState(() => (sampleOn ? SAMPLE_CASE.reference : ""));
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [busyFile, setBusyFile] = useState("");
   const [policy, setPolicy] = useState<Policy>(STANDARD_POLICY);
+  const declaredTouched = useRef(false);
 
   if (sampleOn !== trackedSample) {
     setTrackedSample(sampleOn);
     if (sampleOn) {
+      declaredTouched.current = false;
       const parsed = parseStatement(sampleCsv());
       setRows(parsed.rows);
       setFileName(SAMPLE_CASE.fileName);
       setCaseRef(SAMPLE_CASE.reference);
       setReading(null);
+      setJudgment(null);
+      setDeclaredSales(null);
+      setDeclaredEmi(null);
       setError(null);
     } else {
       setRows(null);
       setReading(null);
+      setJudgment(null);
       setFileName("");
     }
   }
 
-  const analysis = useMemo(() => (rows ? analyze(rows, policy, reading) : null), [rows, policy, reading]);
+  const analysis = useMemo(
+    () => (rows ? analyze(rows, policy, reading, judgment) : null),
+    [rows, policy, reading, judgment],
+  );
+
+  useEffect(() => {
+    if (!sampleOn) return;
+    const file = new File([sampleCsv()], SAMPLE_CASE.fileName, { type: "text/csv" });
+    void openUpload(file, SAMPLE_CASE.reference);
+    // The sample is re-read when the query flag changes. openUpload is recreated each render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sampleOn]);
+
+  useEffect(() => {
+    const active = declaredSales != null || declaredEmi != null;
+    if (!rows?.some((row) => row.key) || (!active && !declaredTouched.current)) return;
+    declaredTouched.current = active;
+    let cancel = false;
+    const handle = window.setTimeout(() => {
+      void refreshJudgment(rows, declaredSales, declaredEmi, (next) => {
+        if (!cancel) setJudgment(next);
+      });
+    }, 700);
+    return () => {
+      cancel = true;
+      window.clearTimeout(handle);
+    };
+  }, [declaredSales, declaredEmi, rows]);
 
   function openText(text: string, name: string, reference: string) {
     const parsed = parseStatement(text);
@@ -88,12 +125,14 @@ export function AnalyzeApp() {
     }
     setError(parsed.skipped ? `${parsed.skipped} rows skipped.` : null);
     setReading(null);
+    setJudgment(null);
     setRows(parsed.rows);
     setFileName(name);
     setCaseRef(reference);
   }
 
   async function openUpload(file: File, reference: string) {
+    declaredTouched.current = false;
     setBusy(true);
     setBusyFile(file.name);
     setError(null);
@@ -106,6 +145,7 @@ export function AnalyzeApp() {
         detail?: string | { msg: string }[];
         rows?: TxnInput[];
         reading?: AiReading;
+        judgment?: Judgment | null;
         fileName?: string;
       };
       if (!response.ok || !payload.rows?.length || !payload.reading) {
@@ -113,12 +153,19 @@ export function AnalyzeApp() {
         setError(detail);
         return;
       }
+      setDeclaredSales(null);
+      setDeclaredEmi(null);
       setRows(payload.rows);
       setReading(payload.reading);
+      setJudgment(payload.judgment ?? null);
       setFileName(payload.fileName || file.name);
       setCaseRef(reference);
     } catch {
-      setError("The local reader is not running. Start it, then send the file again.");
+      setError(
+        sampleOn
+          ? "The model reader is not running, so this file is the local read."
+          : "The local reader is not running. Start it, then send the file again.",
+      );
     } finally {
       setBusy(false);
       setBusyFile("");
@@ -160,9 +207,16 @@ export function AnalyzeApp() {
               onReset={() => {
                 setRows(null);
                 setReading(null);
+                setJudgment(null);
+                setDeclaredSales(null);
+                setDeclaredEmi(null);
                 setError(null);
                 setPolicy(STANDARD_POLICY);
               }}
+              declaredSales={declaredSales}
+              declaredEmi={declaredEmi}
+              onDeclaredSales={setDeclaredSales}
+              onDeclaredEmi={setDeclaredEmi}
             />
           </motion.div>
         ) : (
@@ -203,5 +257,24 @@ function readDesk(): Desk | null {
     };
   } catch {
     return null;
+  }
+}
+
+async function refreshJudgment(
+  rows: TxnInput[],
+  declaredSales: number | null,
+  declaredEmi: number | null,
+  onJudgment: (judgment: Judgment | null) => void,
+) {
+  try {
+    const response = await fetch(JUDGE_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rows, declaredSales, declaredEmi }),
+    });
+    const payload = (await response.json()) as { judgment?: Judgment | null };
+    if (response.ok && payload.judgment) onJudgment(payload.judgment);
+  } catch {
+    // The file already on screen stays. A later edit asks again.
   }
 }

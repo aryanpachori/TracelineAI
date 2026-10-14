@@ -25,6 +25,10 @@ export function Report({
   widgets,
   onWidgets,
   onReset,
+  declaredSales,
+  declaredEmi,
+  onDeclaredSales,
+  onDeclaredEmi,
 }: {
   analysis: Analysis;
   policy: Policy;
@@ -36,6 +40,10 @@ export function Report({
   widgets: WidgetSetting[];
   onWidgets: (widgets: WidgetSetting[]) => void;
   onReset: () => void;
+  declaredSales: number | null;
+  declaredEmi: number | null;
+  onDeclaredSales: (value: number | null) => void;
+  onDeclaredEmi: (value: number | null) => void;
 }) {
   const [arrange, setArrange] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -69,7 +77,16 @@ export function Report({
     outflows: <Debits analysis={analysis} />,
     counterparties: <Payers analysis={analysis} />,
     flags: <Reasons analysis={analysis} />,
-    policy: <PolicyPanel policy={policy} onPolicy={onPolicy} />,
+    policy: (
+      <PolicyPanel
+        policy={policy}
+        onPolicy={onPolicy}
+        declaredSales={declaredSales}
+        declaredEmi={declaredEmi}
+        onDeclaredSales={onDeclaredSales}
+        onDeclaredEmi={onDeclaredEmi}
+      />
+    ),
     readiness: <Readiness analysis={analysis} />,
     integrity: <Checks analysis={analysis} />,
     monthly: <Months analysis={analysis} />,
@@ -766,9 +783,17 @@ function Reasons({ analysis }: { analysis: Analysis }) {
 function PolicyPanel({
   policy,
   onPolicy,
+  declaredSales,
+  declaredEmi,
+  onDeclaredSales,
+  onDeclaredEmi,
 }: {
   policy: Policy;
   onPolicy: (policy: Policy) => void;
+  declaredSales: number | null;
+  declaredEmi: number | null;
+  onDeclaredSales: (value: number | null) => void;
+  onDeclaredEmi: (value: number | null) => void;
 }) {
   const activePreset = POLICY_PRESETS.find((preset) => samePolicy(preset.policy, policy));
   return (
@@ -811,7 +836,43 @@ function PolicyPanel({
           </li>
         ))}
       </ul>
+      <div className="mt-6 grid gap-4 border-t border-rule pt-4 sm:grid-cols-2">
+        <DeclaredField label="Declared monthly sales" value={declaredSales} onChange={onDeclaredSales} />
+        <DeclaredField label="Declared monthly EMI" value={declaredEmi} onChange={onDeclaredEmi} />
+      </div>
+      <p className="mt-2 text-sm text-muted">Leave either blank. When you fill one, the model reads the gap against this statement.</p>
     </div>
+  );
+}
+
+function DeclaredField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: number | null;
+  onChange: (value: number | null) => void;
+}) {
+  return (
+    <label className="block text-sm">
+      {label}
+      <input
+        className="mt-1 block w-full border border-rule bg-sheet px-3 py-2"
+        inputMode="decimal"
+        value={value ?? ""}
+        placeholder="Optional"
+        onChange={(event) => {
+          const next = event.target.value.replace(/,/g, "").trim();
+          if (!next) {
+            onChange(null);
+            return;
+          }
+          const amount = Number(next);
+          onChange(Number.isFinite(amount) ? amount : null);
+        }}
+      />
+    </label>
   );
 }
 

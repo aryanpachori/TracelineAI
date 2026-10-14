@@ -108,7 +108,7 @@ export function UploadPanel({
             type="button"
             className="on-ink px-3 py-1.5 disabled:opacity-40"
             disabled={busy}
-            onClick={() => onFile(sampleCsv(), SAMPLE_CASE.fileName, caseRef.trim() || SAMPLE_CASE.reference)}
+            onClick={() => onUpload(new File([sampleCsv()], SAMPLE_CASE.fileName, { type: "text/csv" }), caseRef.trim() || SAMPLE_CASE.reference)}
           >
             Open the sample
           </button>

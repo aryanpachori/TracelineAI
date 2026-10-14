@@ -80,6 +80,9 @@ def main() -> None:
     train_narration(texts, labels)
     train_grade()
     check_phrases()
+    from app.train_judgment import main as train_pairs
+
+    train_pairs()
 
 
 def load_labeled_text() -> tuple[list[str], list[str]]:

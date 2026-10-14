@@ -12,6 +12,7 @@ import type {
   Policy,
   Preview,
   Reason,
+  Judgment,
   RuleHit,
   Txn,
   TxnInput,
@@ -41,8 +42,9 @@ const KNOWN: Category[] = [
 
 const EARNED: Category[] = ["business_in", "salary"];
 
-export function analyze(inputs: TxnInput[], policy: Policy, reading?: AiReading | null): Analysis {
+export function analyze(inputs: TxnInput[], policy: Policy, reading?: AiReading | null, judgment?: Judgment | null): Analysis {
   const txns = tag(inputs);
+  applyJudgment(txns, judgment);
   const built = buildMonths(txns);
   const cash = buildCashflow(txns, built, policy);
   const months =
@@ -61,7 +63,7 @@ export function analyze(inputs: TxnInput[], policy: Policy, reading?: AiReading 
       : base),
     obligationRatio: habits.burdenRatio,
   };
-  const integrity = buildIntegrity(txns, metrics.months, policy.minMonths);
+  const integrity = buildIntegrity(txns, metrics.months, policy.minMonths, judgment ? judgment.missingMonths : null);
   const local = score(metrics, integrity, policy);
   const grade = cash.mode === "cashflow" ? local : applyReading(local, reading);
   const counterparties = cash.mode === "cashflow" ? cash.payers : buildCounterparties(txns);
@@ -90,8 +92,9 @@ export function analyze(inputs: TxnInput[], policy: Policy, reading?: AiReading 
     cash.mode === "cashflow" ? { commitAlreadyInCash: true, receipt: (txn) => cash.workIds.has(txn.id) } : undefined,
   );
   const groups = buildGroups(txns, months);
-  const reasons = buildReasons(txns, months, metrics, policy, integrity, flows, payability, habits);
-  const capacity = buildCapacity(metrics, policy, flows.extraCommit, habits);
+  const reasons = buildReasons(txns, months, metrics, policy, integrity, flows, payability, habits, judgment);
+  const binding = judgment?.bindingMonth ? months.find((month) => month.key === judgment.bindingMonth) ?? null : null;
+  const capacity = buildCapacity(metrics, policy, flows.extraCommit, habits, binding);
   const summary =
     cash.mode === "cashflow" || !reading?.summary
       ? writeSummary(metrics, capacity, grade, policy, payability)
@@ -138,6 +141,25 @@ export function toPreview(analysis: Analysis): Preview {
     topName: analysis.metrics.topName,
     topShare: analysis.metrics.topShare,
   };
+}
+
+function applyJudgment(txns: Txn[], judgment?: Judgment | null) {
+  if (!judgment) return;
+  const partyOf = new Map<string, string>();
+  judgment.parties.forEach((party) => {
+    party.keys.forEach((key) => partyOf.set(key, party.name));
+  });
+  const aside = new Set(judgment.asideKeys);
+  const debt = new Set(judgment.obligationKeys);
+  const asset = new Set(judgment.investingKeys);
+  txns.forEach((txn) => {
+    if (!txn.key) return;
+    const name = partyOf.get(txn.key);
+    if (name) txn.counterparty = name;
+    if (aside.has(txn.key) && txn.credit > 0) txn.category = "self_in";
+    if (debt.has(txn.key) && txn.debit > 0) txn.category = "emi";
+    if (asset.has(txn.key) && txn.debit > 0) txn.category = "other_out";
+  });
 }
 
 function tag(inputs: TxnInput[]): Txn[] {
@@ -635,13 +657,22 @@ function pushHabitFlags(reasons: Reason[], habits: SpendHabits, policy: Policy) 
   }
 }
 
-function buildCapacity(metrics: Analysis["metrics"], policy: Policy, extraCommit: number, habits: SpendHabits) {
+function buildCapacity(
+  metrics: Analysis["metrics"],
+  policy: Policy,
+  extraCommit: number,
+  habits: SpendHabits,
+  binding?: MonthPoint | null,
+) {
   const lifestyleOff = habits.cashflow ? 0 : habits.uncoveredMonthly;
-  const room = Math.max(0, metrics.medianCashAfterOps - (habits.cashflow ? 0 : extraCommit) - lifestyleOff);
+  const cashLeft = binding ? binding.cashAfterOps : metrics.medianCashAfterOps;
+  const room = Math.max(0, cashLeft - (habits.cashflow ? 0 : extraCommit) - lifestyleOff);
   const monthly = room * habits.pledge;
   const principal = principalFromEmi(monthly, policy.annualRate, policy.tenureMonths);
   const viable = room > 0 && (habits.cashflow || metrics.avgEarned >= policy.minAvgInflow * 0.5);
-  const lead = habits.cashflow
+  const lead = binding
+    ? `The model sized the EMI from ${binding.label}, the month it read as the constraint on this account. Cash left in that month is the base, after the rows it set aside.`
+    : habits.cashflow
     ? "There is no salary on this file. The EMI is a share of the cash left in a typical month after own-account transfers are removed and after the spending already on the statement."
     : "Capacity is a share of cash left after EMI, rent, suppliers, utilities, tax, and return charges, with autopays and subscriptions taken off. The band is the loan that payment would carry at the rate and tenure below.";
   const cuts: string[] = [];
@@ -872,10 +903,21 @@ function buildReasons(
   flows: FlowReport,
   payability: Analysis["payability"],
   habits: SpendHabits,
+  judgment?: Judgment | null,
 ): Reason[] {
   const reasons: Reason[] = [];
   const cashflow = payability.mode === "cashflow";
   const ids = (...categories: Category[]) => txns.filter((txn) => categories.includes(txn.category)).map((txn) => txn.id);
+  const idByKey = new Map(txns.filter((txn) => txn.key).map((txn) => [txn.key as string, txn.id]));
+  judgment?.notes.forEach((note) => {
+    reasons.push({
+      code: note.code,
+      title: note.title,
+      detail: note.detail,
+      severity: note.severity,
+      txnIds: note.keys.map((key) => idByKey.get(key)).filter((id): id is string => Boolean(id)),
+    });
+  });
 
   if (cashflow) {
     reasons.push({
@@ -1119,7 +1161,7 @@ function buildReasons(
   return reasons.sort((a, b) => order[a.severity] - order[b.severity]);
 }
 
-function buildIntegrity(txns: Txn[], months: number, minMonths: number): IntegrityCheck[] {
+function buildIntegrity(txns: Txn[], months: number, minMonths: number, missingMonths: string[] | null): IntegrityCheck[] {
   const withBalance = txns.filter((txn) => txn.balance != null);
   let breaks = 0;
   for (let i = 1; i < txns.length; i += 1) {
@@ -1133,7 +1175,7 @@ function buildIntegrity(txns: Txn[], months: number, minMonths: number): Integri
   const bothSides = txns.filter((txn) => txn.debit > 0 && txn.credit > 0).length;
   const dated = txns.every((txn) => /^\d{4}-\d{2}-\d{2}$/.test(txn.date));
 
-  return [
+  const checks: IntegrityCheck[] = [
     {
       id: "balance",
       label: "Balance continuity",
@@ -1164,6 +1206,15 @@ function buildIntegrity(txns: Txn[], months: number, minMonths: number): Integri
       detail: `${months} months against a minimum of ${minMonths}.`,
     },
   ];
+  if (missingMonths) {
+    checks.push({
+      id: "continuity",
+      label: "Months are continuous",
+      status: missingMonths.length ? "fail" : "pass",
+      detail: missingMonths.length ? `Missing ${missingMonths.join(", ")}.` : "No calendar month is missing inside the statement.",
+    });
+  }
+  return checks;
 }
 
 function buildCounterparties(txns: Txn[]) {

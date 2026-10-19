@@ -97,14 +97,79 @@ export type JudgmentNote = {
   keys: string[];
 };
 
+export type Conduct = {
+  spender: string;
+  consistency: "steady" | "uneven" | "inconsistent";
+  risk: "contained" | "watch" | "high";
+  line: string;
+};
+
 export type Judgment = {
   parties: { name: string; aliases: string[]; keys: string[] }[];
   asideKeys: string[];
   obligationKeys: string[];
+  selfKeys?: string[];
+  peopleKeys?: string[];
+  cashChainKeys?: string[];
   investingKeys: string[];
+  archetype?: "salary" | "trader" | "mixed";
   bindingMonth: string | null;
   missingMonths: string[];
   notes: JudgmentNote[];
+  conduct?: Conduct | null;
+};
+
+export type BackendMetrics = {
+  months?: number;
+  cashLeft?: number;
+  capacityMonthly?: number;
+  bounces6m?: number;
+  obligationRatio?: number;
+  emiShare?: number;
+  concentration?: number;
+  avgEarned?: number;
+  salaryShare?: number;
+  businessEarned?: number;
+  salaryEarned?: number;
+  avgBalance?: number;
+  cashInTotal?: number;
+  cashInShare?: number;
+  archetype?: "salary" | "trader" | "mixed";
+  opaqueCash?: boolean;
+};
+
+export type EligibilityWhy = {
+  id: string;
+  label: string;
+  title: string;
+  detail: string;
+  open?:
+    | { kind: "group"; id: string }
+    | { kind: "month"; key: string }
+    | { kind: "metric"; id: string }
+    | { kind: "reason"; code: string };
+};
+
+export type Character = {
+  spender: string;
+  spenderLine: string;
+  groupId: string | null;
+  cashflow: string;
+  cashflowLine: string;
+  weakMonth: string | null;
+  risk: string;
+  riskLine: string;
+  tone: "contained" | "watch" | "high";
+  returns: number;
+  returnsLine: string;
+  debtLoad: number | null;
+  debtLoadLine: string | null;
+  archetype: "salary" | "trader" | "mixed";
+  archetypeLine: string;
+  cashStructureLine: string | null;
+  verdictLabel: "Eligible" | "Not eligible" | "Eligible with watch";
+  whyLine: string;
+  eligibilityReasons: EligibilityWhy[];
 };
 
 export type RuleHit = {
@@ -184,6 +249,8 @@ export type Analysis = {
   uncategorizedShare: number;
   flows: FlowReport;
   groups: GroupReport;
+  character: Character;
+  backendMetrics?: BackendMetrics | null;
 };
 
 export type Preview = {

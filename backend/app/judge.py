@@ -6,6 +6,7 @@ and folded into the same models, so the next file starts from them.
 """
 
 import json
+import re
 from collections import defaultdict
 from datetime import datetime
 
@@ -15,19 +16,32 @@ from app.extract import complete_async
 from app.model import learn_from_teacher, learn_loops, learn_parties, predict_loop_many, predict_party_many
 from app.names import display_name, share_token
 
-SYSTEM = """You judge one Indian current account for an NBFC. Return JSON only:
-{"merges":[{"name":"","aliases":[]}],"splits":[{"a":"","b":""}],"loops":[{"credit_i":[],"debit_i":[],"detail":""}],"obligations":[{"i":[],"detail":"","late":false}],"investing":[{"i":[],"detail":""}],"binding_month":null,"binding_detail":"","changes":[{"title":"","detail":"","severity":"watch","i":[]}]}
-Use only indexes, names, and month keys from the brief.
+SYSTEM = """You judge one Indian bank account for an NBFC. Return JSON only:
+{"merges":[{"name":"","aliases":[]}],"splits":[{"a":"","b":""}],"loops":[{"credit_i":[],"debit_i":[],"detail":""}],"obligations":[{"i":[],"kind":"debt|self|people","detail":"","late":false}],"cash_chains":[{"cash_i":[],"out_i":[],"detail":""}],"investing":[{"i":[],"detail":""}],"archetype":"salary|trader|mixed","binding_month":null,"binding_detail":"","changes":[{"title":"","detail":"","severity":"watch","i":[]}],"conduct":{"spender":"","consistency":"steady","risk":"watch","line":""}}
+Use only indexes, names, and month keys from the brief. Prefer the structural candidates in the brief over inventing new ones.
 merges are open name pairs that are one real party. splits undo a confirmed merge that is wrong.
-A loop is the same rupee coming back. A supplier paid and a different buyer paying is not a loop.
-An obligation is a repeating debit that is already debt, including ones that were not labelled EMI.
+A loop is the same rupee coming back. Drop refunds, card reversals, and tiny noise. A supplier paid and a different buyer paying is not a loop.
+obligations.kind is debt (EMI, card, NACH, lender), self (own-account hop), or people (person UPI/transfer). Never call self or people debt.
+cash_chains are cash deposits that leave soon as self or transfer out — opaque source, not earned income.
+archetype must be salary, trader, or mixed; start from structural.archetype in the brief.
+binding_month should size a new facility after stripping cash deposits and self-out; prefer structural.binding_hint when it fits.
 Investing is a one-off asset purchase, not stock bought to resell.
-binding_month is the month that should size a new facility, or null to keep a typical month.
 changes are shifts against this account's own earlier months.
 If declared sales or a declared EMI were provided, add one change that states the gap.
+conduct names the spender, whether months agree, and risk of a new EMI.
+consistency is steady, uneven, or inconsistent. risk is contained, watch, or high.
+line must say eligible, not eligible, or eligible with watch, plus the single strongest reason, in one sentence an officer can read in a few seconds.
 Do not apply a fixed percentage, a fixed rupee amount, or a fixed number of days. Judge this account.
 severity is good, info, watch, or breach.
 """
+
+DEBT_HINT = re.compile(
+    r"\bemi\b|nach|ecs|cred\.?club|\bcred\b|credit\s*card|bajaj|bfl|kreditbee|\bnavi\b|"
+    r"slice|lazypay|simpl|home\s*credit|moneyview|earlysalary|postpe|snapmint|"
+    r"loan\s*(emi|repay|instal)|emi\s*loan",
+    re.I,
+)
+LOOP_NOISE = re.compile(r"refund|cradj|ordercan|cashback|\brfnd\b|paymnt\s*rvsl|payment\s*rvsl|reversal", re.I)
 
 
 async def judge(rows: list[dict], declared_sales: float | None = None, declared_emi: float | None = None) -> dict:
@@ -109,20 +123,198 @@ def prepare(rows: list[dict]) -> dict:
     proposed_loops = []
     open_loops = []
     for (credit, debit), label in zip(loop_pairs, loop_labels):
-        slot = {"credit_i": credit["i"], "debit_i": debit["i"], "model": label}
+        if _noisy_loop(credit, debit):
+            continue
+        amount = float(credit.get("credit") or 0)
+        if amount < 500:
+            continue
+        slot = {"credit_i": credit["i"], "debit_i": debit["i"], "model": label, "amount": amount}
         if label == "loop":
             proposed_loops.append(slot)
         elif label == "open":
             open_loops.append(slot)
+    proposed_loops.sort(key=lambda item: float(item.get("amount") or 0), reverse=True)
     open_loops.sort(key=lambda item: abs(float(named[item["credit_i"]].get("credit") or 0) - float(named[item["debit_i"]].get("debit") or 0)))
+    structural = structural_intel(named)
     return {
         "rows": named,
         "groups": groups,
         "open_pairs": open_pairs[:40],
-        "proposed_loops": proposed_loops[:30],
-        "open_loops": open_loops[:24],
+        "proposed_loops": proposed_loops[:12],
+        "open_loops": open_loops[:16],
         "pair_labels": {(a, b): label for (a, b), label in zip(pairs, party)},
+        "structural": structural,
     }
+
+
+def _noisy_loop(credit: dict, debit: dict) -> bool:
+    text = f"{credit.get('description') or ''} {debit.get('description') or ''}"
+    return bool(LOOP_NOISE.search(text))
+
+
+def structural_intel(rows: list[dict]) -> dict:
+    salary = sum(float(row.get("credit") or 0) for row in rows if row.get("category") == "salary")
+    business = sum(float(row.get("credit") or 0) for row in rows if row.get("category") == "business_in")
+    earned = salary + business
+    cash_in_total = sum(float(row.get("credit") or 0) for row in rows if row.get("category") == "cash_in")
+    total_credits = sum(float(row.get("credit") or 0) for row in rows if float(row.get("credit") or 0) > 0)
+    if earned <= 0:
+        archetype = "mixed"
+    elif salary / earned >= 0.5:
+        archetype = "salary"
+    elif business / earned >= 0.5:
+        archetype = "trader"
+    else:
+        archetype = "mixed"
+    cash_share = (cash_in_total / total_credits) if total_credits else 0.0
+    return {
+        "archetype": archetype,
+        "salaryShare": round(salary / earned, 4) if earned else 0.0,
+        "cashInShare": round(cash_share, 4),
+        "cash_chains": _cash_chains(rows),
+        "obligation_candidates": _obligation_candidates(rows),
+        "binding_hint": _binding_hint(rows),
+        "opaqueCash": cash_share >= 0.25,
+    }
+
+
+def _parse_date(value: str) -> datetime | None:
+    try:
+        return datetime.strptime(str(value)[:10], "%Y-%m-%d")
+    except ValueError:
+        return None
+
+
+def _cash_chains(rows: list[dict]) -> list[dict]:
+    cash_rows = [row for row in rows if row.get("category") == "cash_in" and float(row.get("credit") or 0) >= 5000]
+    out_rows = [
+        row
+        for row in rows
+        if float(row.get("debit") or 0) >= 5000
+        and row.get("category") in {"self_out", "transfer_out"}
+    ]
+    chains = []
+    used_out = set()
+    for cash in cash_rows:
+        start = _parse_date(str(cash.get("date") or ""))
+        if not start:
+            continue
+        amount = float(cash.get("credit") or 0)
+        best = None
+        best_days = 99
+        for out in out_rows:
+            if out["i"] in used_out:
+                continue
+            end = _parse_date(str(out.get("date") or ""))
+            if not end:
+                continue
+            days = (end - start).days
+            if days < 0 or days > 3:
+                continue
+            debit = float(out.get("debit") or 0)
+            if abs(debit - amount) > max(80.0, amount * 0.02):
+                continue
+            if days < best_days:
+                best = out
+                best_days = days
+        if best is None:
+            # Same-day / near-day sweep of similar large out without exact match.
+            for out in out_rows:
+                if out["i"] in used_out:
+                    continue
+                end = _parse_date(str(out.get("date") or ""))
+                if not end:
+                    continue
+                days = (end - start).days
+                if days < 0 or days > 3:
+                    continue
+                debit = float(out.get("debit") or 0)
+                if debit < amount * 0.7:
+                    continue
+                best = out
+                best_days = days
+                break
+        if best is None:
+            continue
+        used_out.add(best["i"])
+        chains.append(
+            {
+                "cash_i": [cash["i"]],
+                "out_i": [best["i"]],
+                "amount": round(amount, 2),
+                "days": best_days,
+                "detail": f"Cash in leaves as {best.get('category')} within {best_days} day(s).",
+            }
+        )
+    chains.sort(key=lambda item: float(item.get("amount") or 0), reverse=True)
+    return chains[:12]
+
+
+def _obligation_candidates(rows: list[dict]) -> list[dict]:
+    by_name: dict[str, list[dict]] = defaultdict(list)
+    for row in rows:
+        if float(row.get("debit") or 0) <= 0 or not row.get("name"):
+            continue
+        if row.get("category") in {"bounce_charge", "bounce_reversal", "other_out"}:
+            continue
+        by_name[row["name"]].append(row)
+    candidates = []
+    for name, items in by_name.items():
+        months = {str(item.get("date") or "")[:7] for item in items}
+        if len(months) < 2:
+            continue
+        text = " ".join(str(item.get("description") or "") for item in items[:6])
+        category = items[0].get("category")
+        if category == "self_out" or all(item.get("category") == "self_out" for item in items):
+            kind = "self"
+        elif DEBT_HINT.search(text) or category in {"emi", "rent"}:
+            kind = "debt"
+        elif category in {"transfer_out"} or ("upi" in text.lower() and "@" in text.lower()):
+            kind = "people"
+        elif category == "personal" and DEBT_HINT.search(text):
+            kind = "debt"
+        else:
+            continue
+        amounts = [float(item.get("debit") or 0) for item in items]
+        typical = sorted(amounts)[len(amounts) // 2]
+        candidates.append(
+            {
+                "name": name,
+                "kind": kind,
+                "months": sorted(months),
+                "typical": round(typical, 2),
+                "i": [item["i"] for item in items[:18]],
+            }
+        )
+    candidates.sort(key=lambda item: float(item.get("typical") or 0), reverse=True)
+    return candidates[:20]
+
+
+def _binding_hint(rows: list[dict]) -> str | None:
+    months: dict[str, float] = {}
+    for row in rows:
+        key = str(row.get("date") or "")[:7]
+        if len(key) < 7:
+            continue
+        credit = float(row.get("credit") or 0)
+        debit = float(row.get("debit") or 0)
+        category = row.get("category")
+        earned = credit if category in {"business_in", "salary"} else 0.0
+        # Strip dressing: ignore cash_in as earned; ignore self_out as ops drain for sizing.
+        if category == "cash_in":
+            credit = 0.0
+        if category == "self_out":
+            debit = 0.0
+        ops = 0.0
+        if category in {"emi", "rent", "supplier", "utilities", "tax", "bounce_charge"}:
+            ops = debit
+        elif category == "personal" and DEBT_HINT.search(str(row.get("description") or "")):
+            ops = debit
+        months[key] = months.get(key, 0.0) + earned - ops
+    if not months:
+        return None
+    weak = min(months.items(), key=lambda item: item[1])
+    return weak[0]
 
 
 def build_brief(prepared: dict, declared_sales: float | None, declared_emi: float | None) -> dict:
@@ -184,7 +376,17 @@ def build_brief(prepared: dict, declared_sales: float | None, declared_emi: floa
         )
     present = sorted(months)
     missing = missing_months(present)
+    structural = prepared.get("structural") or structural_intel(rows)
     brief = {
+        "structural": {
+            "archetype": structural.get("archetype"),
+            "salaryShare": structural.get("salaryShare"),
+            "cashInShare": structural.get("cashInShare"),
+            "opaqueCash": structural.get("opaqueCash"),
+            "binding_hint": structural.get("binding_hint"),
+            "cash_chains": structural.get("cash_chains") or [],
+            "obligation_candidates": structural.get("obligation_candidates") or [],
+        },
         "confirmed_parties": [
             {"name": group["name"], "aliases": group["aliases"]}
             for group in prepared["groups"]
@@ -262,6 +464,7 @@ def shape(prepared: dict, decision: dict) -> dict:
         if keys:
             parties.append({"name": canonical, "aliases": alias_list, "keys": keys})
 
+    structural = prepared.get("structural") or structural_intel(rows)
     model_loops = _pairs(None, prepared["proposed_loops"])
     extra_loops = _pairs(decision.get("loops"), []) if decision and "loops" in decision else []
     seen_loops = set()
@@ -270,14 +473,20 @@ def shape(prepared: dict, decision: dict) -> dict:
         key = (tuple(credits), tuple(debits))
         if key in seen_loops:
             continue
+        if any(_noisy_loop(rows[i], rows[j]) for i in credits for j in debits if 0 <= i < len(rows) and 0 <= j < len(rows)):
+            continue
+        amount = sum(float(rows[i].get("credit") or 0) for i in credits if 0 <= i < len(rows))
+        if amount < 500:
+            continue
         seen_loops.add(key)
-        loop_ids.append((credits, debits, detail))
+        loop_ids.append((credits, debits, detail, amount))
+    loop_ids.sort(key=lambda item: item[3], reverse=True)
+    loop_ids = loop_ids[:5]
     aside = []
     notes = []
-    for index, (credits, debits, detail) in enumerate(loop_ids):
+    for index, (credits, debits, detail, amount) in enumerate(loop_ids):
         credit_keys = [_key(rows, i) for i in credits]
         debit_keys = [_key(rows, i) for i in debits]
-        amount = sum(float(rows[i].get("credit") or 0) for i in credits if 0 <= i < len(rows))
         aside.extend(key for key in credit_keys if key)
         notes.append(
             {
@@ -289,19 +498,66 @@ def shape(prepared: dict, decision: dict) -> dict:
             }
         )
 
-    for index, item in enumerate(decision.get("obligations") or []):
+    obligation_keys: list[str] = []
+    self_keys: list[str] = []
+    people_keys: list[str] = []
+    obligations = decision.get("obligations") if isinstance(decision.get("obligations"), list) else None
+    if not obligations:
+        obligations = [
+            {"i": item.get("i"), "kind": item.get("kind"), "detail": f"{item.get('name')} repeats.", "late": False}
+            for item in structural.get("obligation_candidates") or []
+        ]
+    for index, item in enumerate(obligations):
         if not isinstance(item, dict):
             continue
-        keys = [_key(rows, i) for i in _ints(item.get("i"))]
-        keys = [key for key in keys if key]
+        keys = [key for key in (_key(rows, i) for i in _ints(item.get("i"))) if key]
         if not keys:
             continue
+        kind = str(item.get("kind") or "debt").strip().lower()
+        if kind not in {"debt", "self", "people"}:
+            kind = "debt"
+        if kind == "debt":
+            obligation_keys.extend(keys)
+            title = "A repeating debit is already debt"
+            code = f"judge-debt-{index}"
+        elif kind == "self":
+            self_keys.extend(keys)
+            title = "Money hops to another own account"
+            code = f"judge-self-{index}"
+        else:
+            people_keys.extend(keys)
+            title = "Repeating payments to people"
+            code = f"judge-people-{index}"
         notes.append(
             {
-                "code": f"judge-debt-{index}",
-                "title": "A repeating debit is already debt",
-                "detail": _sentence(item.get("detail"), "These rows are counted with the obligations."),
-                "severity": "watch" if item.get("late") else "info",
+                "code": code,
+                "title": title,
+                "detail": _sentence(item.get("detail"), "These rows are counted with the obligations." if kind == "debt" else "These are not treated as loan EMI."),
+                "severity": "watch" if item.get("late") or kind == "debt" else "info",
+                "keys": keys,
+            }
+        )
+
+    cash_chains = decision.get("cash_chains") if isinstance(decision.get("cash_chains"), list) else None
+    if not cash_chains:
+        cash_chains = structural.get("cash_chains") or []
+    cash_chain_keys: list[str] = []
+    for index, item in enumerate(cash_chains[:8]):
+        if not isinstance(item, dict):
+            continue
+        cash_i = _ints(item.get("cash_i"))
+        out_i = _ints(item.get("out_i"))
+        keys = [key for key in (_key(rows, i) for i in cash_i + out_i) if key]
+        if not keys:
+            continue
+        cash_chain_keys.extend(keys)
+        amount = sum(float(rows[i].get("credit") or 0) for i in cash_i if 0 <= i < len(rows))
+        notes.append(
+            {
+                "code": f"judge-cash-{index}",
+                "title": "Cash deposits leave the account quickly",
+                "detail": _sentence(item.get("detail"), f"{_rupees(amount)} of cash is not treated as earned inflow."),
+                "severity": "breach" if structural.get("opaqueCash") else "watch",
                 "keys": keys,
             }
         )
@@ -322,8 +578,10 @@ def shape(prepared: dict, decision: dict) -> dict:
             }
         )
 
-    binding = str(decision.get("binding_month") or "")
     month_keys = {str(row.get("date") or "")[:7] for row in rows}
+    binding = str(decision.get("binding_month") or "")
+    if binding not in month_keys:
+        binding = str(structural.get("binding_hint") or "")
     if binding not in month_keys:
         binding = ""
     if binding:
@@ -331,7 +589,10 @@ def shape(prepared: dict, decision: dict) -> dict:
             {
                 "code": "judge-bind",
                 "title": f"{binding} sizes the facility",
-                "detail": _sentence(decision.get("binding_detail"), "The facility uses this month instead of a typical one."),
+                "detail": _sentence(
+                    decision.get("binding_detail"),
+                    "Cash deposits and self-transfers are stripped before this month is used to size.",
+                ),
                 "severity": "info",
                 "keys": [row["key"] for row in rows if str(row.get("date") or "").startswith(binding) and row.get("key")],
             }
@@ -367,24 +628,54 @@ def shape(prepared: dict, decision: dict) -> dict:
             }
         )
 
-    obligation_keys = []
-    for item in decision.get("obligations") or []:
-        if isinstance(item, dict):
-            obligation_keys.extend(key for key in (_key(rows, i) for i in _ints(item.get("i"))) if key)
     investing_keys = []
     for item in decision.get("investing") or []:
         if isinstance(item, dict):
             investing_keys.extend(key for key in (_key(rows, i) for i in _ints(item.get("i"))) if key)
 
+    archetype = str(decision.get("archetype") or structural.get("archetype") or "mixed").strip().lower()
+    if archetype not in {"salary", "trader", "mixed"}:
+        archetype = structural.get("archetype") or "mixed"
+
     return {
         "parties": parties,
         "asideKeys": aside,
-        "obligationKeys": obligation_keys,
+        "obligationKeys": list(dict.fromkeys(obligation_keys)),
+        "selfKeys": list(dict.fromkeys(self_keys)),
+        "peopleKeys": list(dict.fromkeys(people_keys)),
+        "cashChainKeys": list(dict.fromkeys(cash_chain_keys)),
         "investingKeys": investing_keys,
+        "archetype": archetype,
         "bindingMonth": binding or None,
         "missingMonths": missing_months(sorted({str(row.get("date") or "")[:7] for row in rows if len(str(row.get("date") or "")) >= 7})),
         "notes": notes,
+        "conduct": _conduct(decision.get("conduct"), archetype=archetype, opaque_cash=bool(structural.get("opaqueCash"))),
     }
+
+
+def _conduct(raw, archetype: str = "mixed", opaque_cash: bool = False) -> dict | None:
+    if not isinstance(raw, dict):
+        raw = {}
+    consistency = str(raw.get("consistency") or "").strip().lower()
+    risk = str(raw.get("risk") or "").strip().lower()
+    spender = str(raw.get("spender") or "").strip()[:48]
+    line = str(raw.get("line") or "").strip()[:220]
+    if consistency not in {"steady", "uneven", "inconsistent"}:
+        consistency = "uneven"
+    if risk not in {"contained", "watch", "high"}:
+        risk = "watch" if opaque_cash else "contained"
+    if opaque_cash and risk == "contained":
+        risk = "watch"
+    if not spender:
+        spender = {"salary": "Salaried", "trader": "Trade", "mixed": "Mixed"}.get(archetype, "Mixed")
+    if not line:
+        if opaque_cash:
+            line = "Eligible with watch: cash deposits dress the months and are not treated as earned inflow."
+        elif archetype == "salary":
+            line = "Eligible if cash left after salary commitments covers a new EMI."
+        else:
+            line = "Eligible if a typical month still leaves room after obligations."
+    return {"spender": spender, "consistency": consistency, "risk": risk, "line": line}
 
 
 def learn(prepared: dict, decision: dict) -> None:
@@ -428,6 +719,9 @@ def learn(prepared: dict, decision: dict) -> None:
 
     for item in decision.get("obligations") or []:
         if not isinstance(item, dict):
+            continue
+        kind = str(item.get("kind") or "debt").strip().lower()
+        if kind != "debt":
             continue
         for index in _ints(item.get("i")):
             if 0 <= index < len(rows):

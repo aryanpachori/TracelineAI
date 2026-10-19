@@ -20,6 +20,10 @@ def measure(rows: list[dict]) -> dict:
         category = row["category"]
         if category in {"business_in", "salary"}:
             bucket["earned"] += row["credit"]
+            if category == "salary":
+                bucket["salary"] = bucket.get("salary", 0.0) + row["credit"]
+            else:
+                bucket["business"] = bucket.get("business", 0.0) + row["credit"]
         if category == "bounce_reversal":
             bucket["earned"] -= row["debit"]
             if row["debit"] > 0:
@@ -39,6 +43,8 @@ def measure(rows: list[dict]) -> dict:
         for key in keys
     ]
     earned = [months[key]["earned"] for key in keys]
+    salary_earned = sum(months[key].get("salary", 0.0) for key in keys)
+    business_earned = sum(months[key].get("business", 0.0) for key in keys)
     recent = keys[-6:]
     bounces = sum(months[key]["bounces"] for key in recent)
     avg_earned = sum(earned) / len(earned) if earned else 0
@@ -51,9 +57,24 @@ def measure(rows: list[dict]) -> dict:
             name = row["description"].split("/")[0][:40]
             buyers[name] = buyers.get(name, 0) + row["credit"]
     top_share = (max(buyers.values()) / business) if business and buyers else 0
-    emi_share = (sum(months[key]["emi"] for key in keys) / sum(earned)) if sum(earned) else 0
+    total_earned = sum(earned)
+    emi_share = (sum(months[key]["emi"] for key in keys) / total_earned) if total_earned else 0
+    salary_share = (salary_earned / total_earned) if total_earned else 0
     cash_left = median(cash) if cash else 0
     room = max(0.0, cash_left)
+    balances = [float(row.get("balance") or 0) for row in rows if row.get("balance") is not None]
+    avg_balance = sum(balances) / len(balances) if balances else 0.0
+    cash_in = sum(float(row.get("credit") or 0) for row in rows if row.get("category") == "cash_in")
+    total_credits = sum(float(row.get("credit") or 0) for row in rows if float(row.get("credit") or 0) > 0)
+    cash_in_share = (cash_in / total_credits) if total_credits else 0.0
+    if total_earned <= 0:
+        archetype = "mixed"
+    elif salary_share >= 0.5:
+        archetype = "salary"
+    elif (business_earned / total_earned) >= 0.5:
+        archetype = "trader"
+    else:
+        archetype = "mixed"
     return {
         "months": len(keys),
         "cashLeft": round(cash_left, 2),
@@ -63,6 +84,14 @@ def measure(rows: list[dict]) -> dict:
         "emiShare": round(emi_share, 4),
         "concentration": round(top_share, 4),
         "avgEarned": round(avg_earned, 2),
+        "salaryShare": round(salary_share, 4),
+        "businessEarned": round(business_earned, 2),
+        "salaryEarned": round(salary_earned, 2),
+        "avgBalance": round(avg_balance, 2),
+        "cashInTotal": round(cash_in, 2),
+        "cashInShare": round(cash_in_share, 4),
+        "archetype": archetype,
+        "opaqueCash": cash_in_share >= 0.25,
     }
 
 
@@ -86,7 +115,28 @@ def choose_grade(metrics: dict) -> dict:
     ml_letter = predict_grade(metrics)
     if ml_letter in GRADES:
         prompt += f"\n\nThe trained grade model already chose {ml_letter}. Keep that letter."
-    raw = complete("You grade an Indian MSME current-account file. Stay inside the given bands.", prompt)
+    archetype = str(metrics.get("archetype") or "")
+    salary_share = float(metrics.get("salaryShare") or 0)
+    if archetype == "salary" or salary_share >= 0.5:
+        system = (
+            "You grade an Indian savings / salary account for an NBFC. "
+            "This is a personal salary file, not an MSME current account. "
+            "Do not call the borrower an MSME or a business. Stay inside the given bands."
+        )
+        prompt += (
+            "\n\nAccount shape: salary dominates earned inflow. "
+            "Write the summary as a salaried individual, not a business."
+        )
+    elif archetype == "mixed":
+        system = (
+            "You grade an Indian bank account with mixed salary and other credits for an NBFC. "
+            "Stay inside the given bands. Do not invent an MSME story if salary leads."
+        )
+    else:
+        system = "You grade an Indian MSME current-account file. Stay inside the given bands."
+    if metrics.get("opaqueCash"):
+        prompt += "\n\nCash deposits are a large share of credits; do not treat them as earned strength."
+    raw = complete(system, prompt)
     letter = ml_letter if ml_letter in GRADES else str(raw.get("letter") or "C").upper()
     if float(metrics.get("avgEarned") or 0) < 8000 or int(metrics.get("months") or 0) < 6:
         letter = "E"

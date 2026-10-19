@@ -16,6 +16,15 @@ SKIP = {
 }
 
 
+def _is_ref_noise(compact: str) -> bool:
+    """UPI / bank reference blobs are not party names."""
+    if len(compact) >= 16 and sum(ch.isdigit() for ch in compact) >= 8:
+        return True
+    if re.fullmatch(r"(ycd|ici|crd|sbi|hdf|ubi|axl|yes)[a-z0-9]{10,}", compact):
+        return True
+    return False
+
+
 def display_name(narration: str) -> str:
     kept: list[str] = []
     for part in re.split(r"[/|]", narration or ""):
@@ -24,6 +33,8 @@ def display_name(narration: str) -> str:
         if not piece or compact in SKIP or compact.isdigit() or len(compact) < 3:
             continue
         if re.fullmatch(r"[a-z]*\d{3,}", compact):
+            continue
+        if _is_ref_noise(compact):
             continue
         kept.append(piece)
     if not kept:

@@ -1,3 +1,4 @@
+import { readCharacter } from "./character";
 import { categorize, counterparty } from "./categorize";
 import { buildFlows } from "./flows";
 import { buildGroups, groupOf } from "./groups";
@@ -12,6 +13,7 @@ import type {
   Policy,
   Preview,
   Reason,
+  BackendMetrics,
   Judgment,
   RuleHit,
   Txn,
@@ -42,7 +44,13 @@ const KNOWN: Category[] = [
 
 const EARNED: Category[] = ["business_in", "salary"];
 
-export function analyze(inputs: TxnInput[], policy: Policy, reading?: AiReading | null, judgment?: Judgment | null): Analysis {
+export function analyze(
+  inputs: TxnInput[],
+  policy: Policy,
+  reading?: AiReading | null,
+  judgment?: Judgment | null,
+  backendMetrics?: BackendMetrics | null,
+): Analysis {
   const txns = tag(inputs);
   applyJudgment(txns, judgment);
   const built = buildMonths(txns);
@@ -99,6 +107,17 @@ export function analyze(inputs: TxnInput[], policy: Policy, reading?: AiReading 
     cash.mode === "cashflow" || !reading?.summary
       ? writeSummary(metrics, capacity, grade, policy, payability)
       : reading.summary;
+  const capable = capacity.monthly > 0 && capacity.principal > 0;
+  const character = readCharacter(months, groups, capable, {
+    bounces: metrics.bounces6m,
+    bounceCap: policy.maxBounces6m,
+    obligationRatio: metrics.obligationRatio,
+    conduct: judgment?.conduct,
+    judgment,
+    backendMetrics,
+    policyMaxObligation: policy.maxObligationRatio,
+    reasons,
+  });
 
   return {
     txns,
@@ -121,6 +140,8 @@ export function analyze(inputs: TxnInput[], policy: Policy, reading?: AiReading 
     uncategorizedShare,
     flows,
     groups,
+    character,
+    backendMetrics: backendMetrics ?? null,
   };
 }
 
@@ -151,13 +172,20 @@ function applyJudgment(txns: Txn[], judgment?: Judgment | null) {
   });
   const aside = new Set(judgment.asideKeys);
   const debt = new Set(judgment.obligationKeys);
+  const self = new Set(judgment.selfKeys || []);
+  const people = new Set(judgment.peopleKeys || []);
   const asset = new Set(judgment.investingKeys);
   txns.forEach((txn) => {
     if (!txn.key) return;
     const name = partyOf.get(txn.key);
     if (name) txn.counterparty = name;
     if (aside.has(txn.key) && txn.credit > 0) txn.category = "self_in";
-    if (debt.has(txn.key) && txn.debit > 0) txn.category = "emi";
+    if (self.has(txn.key) && txn.debit > 0) txn.category = "self_out";
+    if (self.has(txn.key) && txn.credit > 0) txn.category = "self_in";
+    if (people.has(txn.key) && txn.debit > 0) txn.category = "transfer_out";
+    if (people.has(txn.key) && txn.credit > 0) txn.category = "transfer_in";
+    // Debt only — never map self/people into EMI burden.
+    if (debt.has(txn.key) && txn.debit > 0 && !self.has(txn.key) && !people.has(txn.key)) txn.category = "emi";
     if (asset.has(txn.key) && txn.debit > 0) txn.category = "other_out";
   });
 }

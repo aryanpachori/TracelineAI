@@ -10,7 +10,7 @@ import { analyze } from "@/lib/analyze";
 import { parseStatement } from "@/lib/parseStatement";
 import { DEFAULT_CHART, DEFAULT_WIDGETS, STANDARD_POLICY } from "@/lib/policy";
 import { SAMPLE_CASE, sampleCsv } from "@/lib/sample";
-import type { AiReading, ChartConfig, Judgment, Policy, TxnInput, WidgetSetting } from "@/lib/types";
+import type { AiReading, BackendMetrics, ChartConfig, Judgment, Policy, TxnInput, WidgetSetting } from "@/lib/types";
 
 const STORAGE_KEY = "traceline-desk-v1";
 const ANALYZE_URL = process.env.NEXT_PUBLIC_ANALYZE_URL || "http://127.0.0.1:8001/analyze";
@@ -56,6 +56,7 @@ export function AnalyzeApp() {
   const [trackedSample, setTrackedSample] = useState(sampleOn);
   const [rows, setRows] = useState<TxnInput[] | null>(() => (sampleOn ? parseStatement(sampleCsv()).rows : null));
   const [reading, setReading] = useState<AiReading | null>(null);
+  const [backendMetrics, setBackendMetrics] = useState<BackendMetrics | null>(null);
   const [judgment, setJudgment] = useState<Judgment | null>(null);
   const [declaredSales, setDeclaredSales] = useState<number | null>(null);
   const [declaredEmi, setDeclaredEmi] = useState<number | null>(null);
@@ -76,6 +77,7 @@ export function AnalyzeApp() {
       setFileName(SAMPLE_CASE.fileName);
       setCaseRef(SAMPLE_CASE.reference);
       setReading(null);
+      setBackendMetrics(null);
       setJudgment(null);
       setDeclaredSales(null);
       setDeclaredEmi(null);
@@ -83,14 +85,15 @@ export function AnalyzeApp() {
     } else {
       setRows(null);
       setReading(null);
+      setBackendMetrics(null);
       setJudgment(null);
       setFileName("");
     }
   }
 
   const analysis = useMemo(
-    () => (rows ? analyze(rows, policy, reading, judgment) : null),
-    [rows, policy, reading, judgment],
+    () => (rows ? analyze(rows, policy, reading, judgment, backendMetrics) : null),
+    [rows, policy, reading, judgment, backendMetrics],
   );
 
   useEffect(() => {
@@ -145,6 +148,7 @@ export function AnalyzeApp() {
         detail?: string | { msg: string }[];
         rows?: TxnInput[];
         reading?: AiReading;
+        metrics?: BackendMetrics;
         judgment?: Judgment | null;
         fileName?: string;
       };
@@ -157,6 +161,7 @@ export function AnalyzeApp() {
       setDeclaredEmi(null);
       setRows(payload.rows);
       setReading(payload.reading);
+      setBackendMetrics(payload.metrics ?? null);
       setJudgment(payload.judgment ?? null);
       setFileName(payload.fileName || file.name);
       setCaseRef(reference);

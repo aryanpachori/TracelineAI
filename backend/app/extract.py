@@ -26,6 +26,7 @@ A loan disbursal is loan_in. A transfer from the same person's other account is 
 EMI, NACH loan, or home-loan debit is emi. Rent is rent. Supplier, mill, or stock purchase is supplier.
 Electricity, water, phone, and broadband are utilities. GST and income tax are tax.
 A returned cheque or reversal of a credit is bounce_reversal. The bank charge for that return is bounce_charge.
+Ordinary bank fees (cash deposit charges, SMS, minimum balance, GST on charges) are other_out, not bounce_charge.
 ATM withdrawal is cash_out. Food, fuel, shopping, travel, pharmacy, school, SIP, insurance premium, and subscriptions are personal.
 """
 
@@ -680,7 +681,10 @@ def split_at(part: str) -> int:
 
 
 RISKY = {"business_in", "salary", "supplier"}
-PERSON_HANDLE = re.compile(r"@(?:ok\w*|ybl|axl|ibl|pty|ptsbi|ptaxis|pthdfc|upi|y)\b", re.I)
+PERSON_HANDLE = re.compile(
+    r"(?:@(?:ok\w*|ybl|axl|ibl|pty|ptsbi|ptaxis|pthdfc|upi|yes|paytm|apl|y)\b|\d{10}@)",
+    re.I,
+)
 MERCHANT_HINTS = re.compile(
     r"swiggy|zomato|zepto|blinkit|dominos|bigbasket|amazon|flipkart|netflix|spotify|youtube|irctc|paytmqr|phonepe|\bcred\b",
     re.I,
@@ -689,10 +693,50 @@ CLASSIFY_SYSTEM = """You label Indian bank-statement narrations. Return JSON onl
 Categories: business_in, salary, transfer_in, loan_in, self_in, cash_in, emi, rent, supplier, utilities, tax, bounce_reversal, bounce_charge, cash_out, personal, self_out, transfer_out, other_in, other_out.
 Person-to-person UPI, IMPS, or NEFT is transfer_in or transfer_out, never business_in or supplier.
 A shop, food app, travel app, subscription, or card spend is personal.
-Salary is payroll from an employer. A broker, mutual fund, reimbursement, or investment is other_in or other_out, not salary.
-Loan EMI is emi. Electricity, mobile, and broadband are utilities. Stock or mill purchase is supplier.
+Salary is payroll from an employer (salary / payroll / wages in the narration, or a large recurring employer credit).
+A reimbursement, expense claim, broker credit, mutual fund, or investment is other_in, not salary.
+A transfer that names the same person on both sides is self_in or self_out, never emi.
+Loan EMI / NACH loan is emi. Electricity, mobile, and broadband are utilities. Stock or mill purchase is supplier.
 If the line is unclear, use other_in or other_out. Do not invent a business receipt.
 """
+
+
+def _same_person_transfer(text: str, compact: str) -> bool:
+    """IMPS/NEFT/MMT that names the same person on both ends (own-account hop).
+
+    Do not use UPI here: ICICI repeats the payee name as `NameUPI/Name/vpa`, which
+    is not a self-transfer and would mislabel every merchant and person pay.
+    """
+    if MERCHANT_HINTS.search(text):
+        return False
+    if not any(token in compact for token in ("mmt/", "imps/", "neft/", "rtgs/")):
+        return False
+    match = re.match(r"^([a-z .]{4,40}?)(?:mmt|neft|imps|rtgs)", compact)
+    if not match:
+        return False
+    head_raw = match.group(1).strip()
+    if any(token in head_raw for token in ("ltd", "limited", "pvt", "bank", "corp")):
+        return False
+    head = re.sub(r"[^a-z]", "", head_raw)
+    if len(head) < 6:
+        return False
+    rest = re.sub(r"[^a-z]", "", compact[match.end() :])
+    return head in rest
+
+
+def _salary_credit(text: str, compact: str, credit: float) -> str | None:
+    if "fundtransferinf" not in compact and "salary" not in text and "payroll" not in text:
+        return None
+    if any(token in text for token in ("reimburse", "reimbursement", "expense claim", "exp reimb")):
+        return "other_in"
+    if any(token in text for token in ("salary", "payroll", "wages", "stipend", "novostack")):
+        return "salary"
+    # Large employer NEFT without the word salary (common on ICICI INF lines).
+    if "fundtransferinf" in compact and credit >= 25000:
+        return "salary"
+    if "fundtransferinf" in compact:
+        return "other_in"
+    return None
 
 
 def finish_rows(rows: list[dict]) -> list[dict]:
@@ -727,8 +771,33 @@ def structural_category(row: dict) -> str | None:
     if "int.pd" in compact or "interestpaid" in compact:
         return "other_in" if credit else "other_out"
     if debit and debit < 5000 and any(token in compact for token in ("chrgs", "chgs", "charges")):
-        return "bounce_charge"
-    if credit and any(token in text for token in ("by cash", "cash dep", "self cash", "sak/cash dep")):
+        bounce_hint = any(
+            token in compact
+            for token in (
+                "return",
+                "bounce",
+                "chqret",
+                "cheque",
+                "ecsret",
+                "nachret",
+                "insufficient",
+                "inwardreturn",
+                "outwardreturn",
+            )
+        )
+        # Cash deposit / SMS / AMB fees share "chgs" but are not bounce charges.
+        fee_hint = any(
+            token in compact
+            for token in ("cashchgs", "cashdep", "cashdepchgs", "sms", "amb", "minbal", "folio")
+        )
+        if bounce_hint and not fee_hint:
+            return "bounce_charge"
+        if "chgs" in compact or "chrgs" in compact or "charges" in compact:
+            return "other_out"
+    if credit and any(
+        token in text
+        for token in ("by cash", "cash dep", "self cash", "sak/cash dep", "cashdep", "cam/")
+    ):
         return "cash_in"
     if debit and any(token in text for token in ("atm", "cash wdl", "cwdr")):
         return "cash_out"
@@ -738,22 +807,28 @@ def structural_category(row: dict) -> str | None:
         return "other_in" if credit else "other_out"
     if "wise payment" in text:
         return "transfer_in" if credit else "transfer_out"
+    # Same person both ends → self, not EMI (Signzy false-positive pattern).
+    if _same_person_transfer(text, compact):
+        return "self_in" if credit else "self_out"
     if any(token in compact for token in ("upi/p2a", "imps/p2a", "upi/p2p", "imps/p2p")):
         return "transfer_in" if credit else "transfer_out"
     if "imps/" in compact and not any(token in text for token in ("pvt", "ltd", "limited", "mill", "industries", "purchase", "supplier")):
         return "transfer_in" if credit else "transfer_out"
     if credit and re.search(r"\bcred\b", text):
         return "other_in"
+    salary = _salary_credit(text, compact, float(credit or 0))
+    if salary:
+        return salary
+    has_upi = "upi" in compact or "upi/" in text or "paid via" in text
     if debit and "upi/p2m" in compact:
         return "personal"
     if debit and MERCHANT_HINTS.search(text):
         return "personal"
-    if ("upi/" in text or "upi/" in compact) and PERSON_HANDLE.search(text) and not MERCHANT_HINTS.search(text):
+    # ICICI often glues payee+UPI (`Aryan PachUPI/...`); still person-to-person when VPA looks personal.
+    if has_upi and PERSON_HANDLE.search(text) and not MERCHANT_HINTS.search(text):
         return "transfer_in" if credit else "transfer_out"
-    if debit and ("upi/" in text or "upi/" in compact or "paid via" in text or text.startswith("pos") or text.startswith("ecom")):
+    if debit and (has_upi or text.startswith("pos") or text.startswith("ecom")):
         return "personal"
-    if credit and "fundtransferinf" in compact:
-        return "salary"
     if debit and re.search(r"\bemi\b", text):
         return "emi"
     if debit and re.search(r"\brent\b", text):

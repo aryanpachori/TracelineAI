@@ -46,6 +46,7 @@ export function Report({
   onDeclaredEmi: (value: number | null) => void;
 }) {
   const [arrange, setArrange] = useState(false);
+  const [fileOpen, setFileOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveNote, setSaveNote] = useState("");
   const sheet = useRef<HTMLElement>(null);
@@ -67,7 +68,7 @@ export function Report({
   }
 
   const blocks: Record<WidgetId, ReactNode> = {
-    verdict: <Verdict analysis={analysis} policy={policy} />,
+    verdict: <Verdict analysis={analysis} />,
     kpis: <Averages analysis={analysis} />,
     spending: <Spending analysis={analysis} />,
     facilities: <Facilities analysis={analysis} policy={policy} />,
@@ -105,9 +106,11 @@ export function Report({
           <p className="mt-1 text-muted">{analysis.periodLabel}</p>
         </div>
         <div className="no-print flex flex-wrap gap-4 text-sm">
-          <button type="button" className="underline underline-offset-4" onClick={() => setArrange((open) => !open)}>
-            {arrange ? "Close arrangement" : "Arrange sections"}
-          </button>
+          {fileOpen ? (
+            <button type="button" className="underline underline-offset-4" onClick={() => setArrange((open) => !open)}>
+              {arrange ? "Close arrangement" : "Arrange sections"}
+            </button>
+          ) : null}
           <button type="button" className="underline underline-offset-4 disabled:opacity-60" disabled={saving} onClick={() => void saveFile()}>
             {saving ? "Preparing the PDF…" : "Download the file"}
           </button>
@@ -118,23 +121,29 @@ export function Report({
           </button>
         </div>
       </header>
-      <p className="mt-4 max-w-[46rem] text-sm text-muted">
-        AI credit file. {analysis.txns.length} rows read from the statement. Statement coverage{" "}
-        {analysis.dataConfidence}, from balance, dates, length, and how completely each narration was grouped.
-      </p>
-      <FlowTotals analysis={analysis} />
-      <MoneyFlow analysis={analysis} />
+      {fileOpen ? (
+        <p className="mt-4 max-w-[46rem] text-sm text-muted">
+          {analysis.txns.length} rows read from the statement. Statement coverage {analysis.dataConfidence}, from balance, dates, length, and how completely each narration was grouped.
+        </p>
+      ) : null}
+      {fileOpen ? <FlowTotals analysis={analysis} /> : null}
+      {fileOpen ? <MoneyFlow analysis={analysis} /> : null}
 
-      {arrange ? <Arrange widgets={widgets} onWidgets={onWidgets} /> : null}
+      {fileOpen && arrange ? <Arrange widgets={widgets} onWidgets={onWidgets} /> : null}
 
       <div className="mt-8 grid items-stretch gap-6 lg:grid-cols-12">
         {widgets
-          .filter((widget) => widget.visible)
+          .filter((widget) => widget.visible && (fileOpen || widget.id === "verdict"))
           .map((widget) => (
             <section key={widget.id} className={`panel h-full p-5 ${WIDGET_META[widget.id].span}`}>
               {blocks[widget.id]}
             </section>
           ))}
+      </div>
+      <div className="no-print mt-6">
+        <button type="button" className="on-ink px-4 py-2.5" onClick={() => setFileOpen((open) => !open)}>
+          {fileOpen ? "Close the statement" : "The statement"}
+        </button>
       </div>
       <TrailBar analysis={analysis} />
     </article>
@@ -288,66 +297,94 @@ function SectionTitle({ title, aside }: { title: string; aside?: ReactNode }) {
   );
 }
 
-function Verdict({ analysis, policy }: { analysis: Analysis; policy: Policy }) {
+function Verdict({ analysis }: { analysis: Analysis }) {
   const { open, setOpen } = useOpen();
-  const { grade, capacity, summary } = analysis;
-  const habits = analysis.reasons.filter((item) => item.code.startsWith("HABIT_"));
+  const { capacity, metrics, payability, character } = analysis;
+  const eligible = character.verdictLabel !== "Not eligible";
+  const cashflow = payability.mode === "cashflow";
+  const earns = cashflow ? payability.workAvg : metrics.avgEarned;
+  const committed = cashflow ? payability.spent : metrics.avgEarned * metrics.obligationRatio;
+  const left = cashflow ? payability.left : metrics.medianCashAfterOps;
+  const tone =
+    character.verdictLabel === "Not eligible"
+      ? "text-rust"
+      : character.verdictLabel === "Eligible with watch"
+        ? "text-brass"
+        : "text-pine";
+
+  function openWhy(item: (typeof character.eligibilityReasons)[number]) {
+    if (item.open) setOpen(item.open);
+  }
+
+  function whyPicked(item: (typeof character.eligibilityReasons)[number]) {
+    return item.open ? openMatch(open, item.open) : false;
+  }
+
   return (
     <div>
-      <SectionTitle title="Repayment view" aside={<span className="text-sm text-muted">AI assessment</span>} />
-      <div className="grid gap-8 md:grid-cols-[9rem_1fr] md:items-start">
+      <p className={`text-sm uppercase tracking-[0.16em] ${tone}`}>{character.verdictLabel}</p>
+      <p className="mt-3 font-serif text-5xl leading-none">
+        {eligible ? (
+          <>
+            <Figure value={capacity.bandLow} format={inrCompact} />
+            <span className="mx-2 font-sans text-2xl text-muted">–</span>
+            <Figure value={capacity.bandHigh} format={inrCompact} />
+          </>
+        ) : (
+          "No facility"
+        )}
+      </p>
+      <p className="mt-4 max-w-[34rem] text-lg">{character.whyLine}</p>
+      {eligible ? (
+        <p className="mt-2 max-w-[34rem] text-sm text-muted">
+          {inr(capacity.monthly, 0)} a month is free for a new EMI on this read.
+        </p>
+      ) : null}
+      <dl className="mt-8 grid max-w-[34rem] grid-cols-3 gap-4 border-t border-rule pt-5">
         <div>
-          <p className="font-serif text-8xl leading-none">{grade.letter}</p>
-          <p className="text-2xl font-semibold tracking-[-0.03em] text-pine">{grade.label}</p>
-          <p className="text-sm text-muted">Readiness {grade.points}</p>
+          <dt className="text-sm text-muted">{cashflow ? "Comes in" : "Earns"}</dt>
+          <dd className="num mt-1 font-serif text-2xl leading-none">{inrCompact(earns)}</dd>
+          <dd className="mt-1 text-xs text-muted">a month</dd>
         </div>
         <div>
-          <p className="text-sm text-muted">Capacity for a new EMI</p>
-          <p className="font-serif text-5xl leading-none">
-            <Figure value={capacity.monthly} format={(value) => inr(value, 0)} />
-            <span className="ml-2 font-sans text-lg text-muted">a month</span>
-          </p>
-          <p className="mt-3 text-lg">
-            Facility{" "}
-            <span className="num">
-              <Figure value={capacity.bandLow} format={inrCompact} /> –{" "}
-              <Figure value={capacity.bandHigh} format={inrCompact} />
-            </span>
-            <span className="text-muted">
-              {" "}
-              over {yearsLabel(policy.tenureMonths)} at {pct(datasetRate(grade.letter)[0])}–{pct(datasetRate(grade.letter)[1])}
-            </span>
-          </p>
-          <p className="mt-4 max-w-[46rem]">{summary}</p>
-          {habits.length ? (
-            <ul className="mt-5 max-w-[46rem] border-t border-rule">
-              {habits.map((item) => (
-                <li key={item.code} className="border-b border-rule">
-                  <button
-                    type="button"
-                    className={`block w-full py-2 text-left ${openMatch(open, { kind: "reason", code: item.code }) ? "picked px-2" : ""}`}
-                    onClick={() => setOpen({ kind: "reason", code: item.code })}
-                  >
-                    <span className={`text-sm ${item.severity === "good" ? "text-pine" : item.severity === "breach" ? "text-rust" : "text-brass"}`}>
-                      {item.severity === "good" ? "Strength" : item.severity === "breach" ? "Attention" : "Watch"}
-                    </span>
-                    <span className="mt-1 block font-medium">{item.title}</span>
-                    <span className="mt-1 block text-sm">{item.detail}</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          ) : null}
-          {analysis.payability.mode === "cashflow" ? (
-            <dl className="mt-5 grid max-w-[46rem] grid-cols-2 gap-px border border-rule bg-rule sm:grid-cols-4">
-              <CashCell label="Comes in" value={analysis.payability.workAvg} note={`Middle month ${inrCompact(analysis.payability.workIn)}`} how="Average monthly cash from work: customer receipts, salary, inbound transfers, and cash deposits. Self-transfers, loans, interest, investments, and a credit matched by a similar debit within 3 days are left out." />
-              <CashCell label="Goes out" value={analysis.payability.spentAvg} note={`Middle month ${inrCompact(analysis.payability.spent)}`} how="Average monthly spending. Self-transfers, returned cheques, and those matched round-trips are left out." />
-              <CashCell label="Left" value={analysis.payability.left} note="Middle month, sets the EMI" how="A typical month of cash from work minus spending. The new EMI is taken from this figure." />
-              <CashCell label="Own accounts" value={analysis.payability.moved} note="Left out of both sides" how="Transfers between the borrower's own accounts, plus a credit matched by a similar debit within 3 days." />
-            </dl>
-          ) : null}
+          <dt className="text-sm text-muted">{cashflow ? "Goes out" : "Already committed"}</dt>
+          <dd className="num mt-1 font-serif text-2xl leading-none">{inrCompact(committed)}</dd>
+          <dd className="mt-1 text-xs text-muted">{cashflow ? "middle month" : "a month"}</dd>
         </div>
-      </div>
+        <div>
+          <dt className="text-sm text-muted">Left</dt>
+          <dd className="num mt-1 font-serif text-2xl leading-none">{inrCompact(left)}</dd>
+          <dd className="mt-1 text-xs text-muted">a month</dd>
+        </div>
+      </dl>
+      <ul className="mt-6 max-w-[34rem] border-t border-rule">
+        {character.eligibilityReasons.map((item) => {
+          const clickable = Boolean(item.open);
+          const picked = whyPicked(item);
+          const body = (
+            <>
+              <span className="text-sm text-muted">{item.label}</span>
+              <span className="mt-1 block font-medium">{item.title}</span>
+              <span className="mt-1 block text-sm text-muted">{item.detail}</span>
+            </>
+          );
+          return (
+            <li key={item.id}>
+              {clickable ? (
+                <button
+                  type="button"
+                  className={`block w-full border-b border-rule py-3 text-left ${picked ? "picked px-2" : ""}`}
+                  onClick={() => openWhy(item)}
+                >
+                  {body}
+                </button>
+              ) : (
+                <div className="border-b border-rule py-3">{body}</div>
+              )}
+            </li>
+          );
+        })}
+      </ul>
     </div>
   );
 }
@@ -546,19 +583,6 @@ function GroupList({
           </li>
         ))}
       </ul>
-    </div>
-  );
-}
-
-function CashCell({ label, value, note, how }: { label: string; value: number; note: string; how: string }) {
-  return (
-    <div className="bg-white px-3 py-3">
-      <dt className="flex flex-wrap items-center text-xs text-muted">
-        {label}
-        <InfoTip text={how} />
-      </dt>
-      <dd className="num mt-1 font-serif text-xl">{inrCompact(value)}</dd>
-      <dd className="text-xs text-muted">{note}</dd>
     </div>
   );
 }

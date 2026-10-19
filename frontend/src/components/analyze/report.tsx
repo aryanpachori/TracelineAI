@@ -9,10 +9,11 @@ import { SpendSummary } from "@/components/analyze/spend-summary";
 import { downloadCreditFolder } from "@/lib/credit-pack";
 import { captureReportPdf } from "@/lib/report-pdf";
 import { partyKind, railLabel } from "@/lib/categorize";
+import { bucketReasons } from "@/lib/analyze";
 import { CATEGORY_LABEL, datasetRate, inr, inrBand, inrCompact, pct, prettyDate, signedPct, yearsLabel } from "@/lib/format";
 import { groupName } from "@/lib/groups";
 import { POLICY_PRESETS, SERIES_META, STANDARD_POLICY, WIDGET_META } from "@/lib/policy";
-import type { Analysis, ChartConfig, ChartSeriesKey, Policy, SeriesKind, WidgetId, WidgetSetting } from "@/lib/types";
+import type { Analysis, ChartConfig, ChartSeriesKey, Policy, Reason, SeriesKind, WidgetId, WidgetSetting } from "@/lib/types";
 
 export function Report({
   analysis,
@@ -776,31 +777,140 @@ function Payers({ analysis }: { analysis: Analysis }) {
   );
 }
 
+const WATCH_PREVIEW = 5;
+
 function Reasons({ analysis }: { analysis: Analysis }) {
   const { open, setOpen } = useOpen();
+  const buckets = useMemo(() => bucketReasons(analysis.reasons), [analysis.reasons]);
+  const primary = buckets.filter((bucket) => bucket.id !== "detail");
+  const detail = buckets.find((bucket) => bucket.id === "detail");
+  const [showDetail, setShowDetail] = useState(false);
+  const [expandWatch, setExpandWatch] = useState(false);
+  const total = analysis.reasons.length;
+  const blockCount = buckets.find((bucket) => bucket.id === "blocks")?.items.length ?? 0;
+  const watchCount = buckets.find((bucket) => bucket.id === "watch")?.items.length ?? 0;
+
   return (
     <div>
-      <SectionTitle title="Notes" aside={<span className="text-sm text-muted">Open one to see the rows</span>} />
-      <ul>
-        {analysis.reasons.map((item) => (
-          <li key={item.code} className="border-b border-rule">
-            <button
-              type="button"
-              className={`block w-full py-3 text-left ${openMatch(open, { kind: "reason", code: item.code }) ? "picked px-2" : ""}`}
-              onClick={() => setOpen({ kind: "reason", code: item.code })}
-            >
-              <span className="flex flex-wrap items-baseline justify-between gap-2">
-                <span className="font-medium">{item.title}</span>
-                <span className={`text-sm ${item.severity === "good" ? "text-pine" : item.severity === "breach" ? "text-rust" : item.severity === "watch" ? "text-brass" : "text-muted"}`}>
-                  {item.severity === "good" ? "Strength" : item.severity === "breach" ? "Attention" : item.severity === "watch" ? "Watch" : "Note"}
-                </span>
+      <SectionTitle
+        title="Notes"
+        aside={
+          <span className="text-sm text-muted">
+            {total} · {blockCount ? `${blockCount} block` : "no blocks"}
+            {watchCount ? ` · ${watchCount} watch` : ""}
+          </span>
+        }
+      />
+      <p className="mb-4 max-w-[40rem] text-sm text-muted">
+        Why this file is eligible or not. Blockers first, then watch. Name merges and quieter notes stay folded.
+      </p>
+      {primary.map((bucket) => {
+        const capped = bucket.id === "watch" && !expandWatch && bucket.items.length > WATCH_PREVIEW;
+        const items = capped ? bucket.items.slice(0, WATCH_PREVIEW) : bucket.items;
+        return (
+          <div key={bucket.id} className="mb-6">
+            <div className="mb-2 flex items-baseline justify-between gap-3 border-b border-rule pb-2">
+              <h3 className="font-medium">
+                {bucket.label}
+                <span className="ml-2 text-sm font-normal text-muted">{bucket.items.length}</span>
+              </h3>
+              <span className="text-sm text-muted">{bucket.hint}</span>
+            </div>
+            <ul>
+              {items.map((item) => (
+                <ReasonRow key={item.code} item={item} open={open} onOpen={setOpen} />
+              ))}
+            </ul>
+            {capped ? (
+              <button
+                type="button"
+                className="mt-2 text-sm text-muted underline-offset-2 hover:underline"
+                onClick={() => setExpandWatch(true)}
+              >
+                Show {bucket.items.length - WATCH_PREVIEW} more watch items
+              </button>
+            ) : null}
+            {bucket.id === "watch" && expandWatch && bucket.items.length > WATCH_PREVIEW ? (
+              <button
+                type="button"
+                className="mt-2 text-sm text-muted underline-offset-2 hover:underline"
+                onClick={() => setExpandWatch(false)}
+              >
+                Show fewer
+              </button>
+            ) : null}
+          </div>
+        );
+      })}
+      {detail && detail.items.length > 0 ? (
+        <div className="border-t border-rule pt-4">
+          <button
+            type="button"
+            className="flex w-full items-baseline justify-between gap-3 text-left"
+            onClick={() => setShowDetail((value) => !value)}
+          >
+            <span>
+              <span className="font-medium">{detail.label}</span>
+              <span className="mt-1 block text-sm text-muted">
+                {detail.items.length} quieter notes · {detail.hint}
               </span>
-              <span className="mt-1 block text-sm">{item.detail}</span>
-            </button>
-          </li>
-        ))}
-      </ul>
+            </span>
+            <span className="text-sm text-muted">{showDetail ? "Hide" : "Show"}</span>
+          </button>
+          {showDetail ? (
+            <ul className="mt-3">
+              {detail.items.map((item) => (
+                <ReasonRow key={item.code} item={item} open={open} onOpen={setOpen} muted />
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      ) : null}
     </div>
+  );
+}
+
+function ReasonRow({
+  item,
+  open,
+  onOpen,
+  muted,
+}: {
+  item: Reason;
+  open: ReturnType<typeof useOpen>["open"];
+  onOpen: ReturnType<typeof useOpen>["setOpen"];
+  muted?: boolean;
+}) {
+  const tone =
+    item.severity === "good"
+      ? "text-pine"
+      : item.severity === "breach"
+        ? "text-rust"
+        : item.severity === "watch"
+          ? "text-brass"
+          : "text-muted";
+  const label =
+    item.severity === "good"
+      ? "Strength"
+      : item.severity === "breach"
+        ? "Blocks"
+        : item.severity === "watch"
+          ? "Watch"
+          : "Note";
+  return (
+    <li className="border-b border-rule">
+      <button
+        type="button"
+        className={`block w-full py-3 text-left ${openMatch(open, { kind: "reason", code: item.code }) ? "picked px-2" : ""}`}
+        onClick={() => onOpen({ kind: "reason", code: item.code })}
+      >
+        <span className="flex flex-wrap items-baseline justify-between gap-2">
+          <span className={`font-medium ${muted ? "text-ink/80" : ""}`}>{item.title}</span>
+          <span className={`text-sm ${tone}`}>{label}</span>
+        </span>
+        <span className={`mt-1 block text-sm ${muted ? "text-muted" : ""}`}>{item.detail}</span>
+      </button>
+    </li>
   );
 }
 

@@ -195,7 +195,9 @@ function buildEligibilityReasons(input: {
   }
 
   if (input.cashStructureLine) {
-    const cashNote = input.judgment?.notes.find((note) => note.code.startsWith("judge-cash-"));
+    const cashNote = input.judgment?.notes.find(
+      (note) => note.code === "judge-cash-summary" || note.code.startsWith("judge-cash-"),
+    );
     rows.push({
       id: "cash",
       label: "Cash structure",

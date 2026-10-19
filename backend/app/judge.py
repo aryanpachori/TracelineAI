@@ -484,17 +484,22 @@ def shape(prepared: dict, decision: dict) -> dict:
     loop_ids = loop_ids[:5]
     aside = []
     notes = []
-    for index, (credits, debits, detail, amount) in enumerate(loop_ids):
+    loop_keys: list[str] = []
+    loop_total = 0.0
+    for credits, debits, detail, amount in loop_ids:
         credit_keys = [_key(rows, i) for i in credits]
         debit_keys = [_key(rows, i) for i in debits]
         aside.extend(key for key in credit_keys if key)
+        loop_keys.extend(key for key in credit_keys + debit_keys if key)
+        loop_total += amount
+    if loop_ids:
         notes.append(
             {
-                "code": f"judge-loop-{index}",
+                "code": "judge-loop-summary",
                 "title": "The same rupee comes back",
-                "detail": _sentence(detail, f"{_rupees(amount)} leaves earned inflow."),
+                "detail": f"{len(loop_ids)} same-rupee loops total {_rupees(loop_total)} leaving earned inflow.",
                 "severity": "watch",
-                "keys": [key for key in credit_keys + debit_keys if key],
+                "keys": list(dict.fromkeys(loop_keys))[:40],
             }
         )
 
@@ -507,7 +512,10 @@ def shape(prepared: dict, decision: dict) -> dict:
             {"i": item.get("i"), "kind": item.get("kind"), "detail": f"{item.get('name')} repeats.", "late": False}
             for item in structural.get("obligation_candidates") or []
         ]
-    for index, item in enumerate(obligations):
+    debt_groups: list[tuple[list[str], str, bool]] = []
+    self_groups: list[tuple[list[str], str]] = []
+    people_groups: list[tuple[list[str], str]] = []
+    for item in obligations:
         if not isinstance(item, dict):
             continue
         keys = [key for key in (_key(rows, i) for i in _ints(item.get("i"))) if key]
@@ -516,25 +524,50 @@ def shape(prepared: dict, decision: dict) -> dict:
         kind = str(item.get("kind") or "debt").strip().lower()
         if kind not in {"debt", "self", "people"}:
             kind = "debt"
+        detail = str(item.get("detail") or "").strip()
         if kind == "debt":
             obligation_keys.extend(keys)
-            title = "A repeating debit is already debt"
-            code = f"judge-debt-{index}"
+            debt_groups.append((keys, detail, bool(item.get("late"))))
         elif kind == "self":
             self_keys.extend(keys)
-            title = "Money hops to another own account"
-            code = f"judge-self-{index}"
+            self_groups.append((keys, detail))
         else:
             people_keys.extend(keys)
-            title = "Repeating payments to people"
-            code = f"judge-people-{index}"
+            people_groups.append((keys, detail))
+    if debt_groups:
+        keys = [key for group in debt_groups for key in group[0]]
+        late = any(group[2] for group in debt_groups)
         notes.append(
             {
-                "code": code,
-                "title": title,
-                "detail": _sentence(item.get("detail"), "These rows are counted with the obligations." if kind == "debt" else "These are not treated as loan EMI."),
-                "severity": "watch" if item.get("late") or kind == "debt" else "info",
-                "keys": keys,
+                "code": "judge-debt-summary",
+                "title": "A repeating debit is already debt",
+                "detail": f"{len(debt_groups)} debt series are counted with obligations"
+                + (" and at least one looks late." if late else ".")
+                + " Self-transfers and people pays stay out of EMI.",
+                "severity": "watch",
+                "keys": list(dict.fromkeys(keys))[:40],
+            }
+        )
+    if self_groups:
+        keys = [key for group in self_groups for key in group[0]]
+        notes.append(
+            {
+                "code": "judge-self-summary",
+                "title": "Money hops to another own account",
+                "detail": f"{len(self_groups)} self-transfer series are on the file. These are not treated as loan EMI.",
+                "severity": "info",
+                "keys": list(dict.fromkeys(keys))[:40],
+            }
+        )
+    if people_groups:
+        keys = [key for group in people_groups for key in group[0]]
+        notes.append(
+            {
+                "code": "judge-people-summary",
+                "title": "Repeating payments to people",
+                "detail": f"{len(people_groups)} people series repeat on the file. These are not treated as loan EMI.",
+                "severity": "info",
+                "keys": list(dict.fromkeys(keys))[:40],
             }
         )
 
@@ -542,7 +575,8 @@ def shape(prepared: dict, decision: dict) -> dict:
     if not cash_chains:
         cash_chains = structural.get("cash_chains") or []
     cash_chain_keys: list[str] = []
-    for index, item in enumerate(cash_chains[:8]):
+    cash_total = 0.0
+    for item in cash_chains[:12]:
         if not isinstance(item, dict):
             continue
         cash_i = _ints(item.get("cash_i"))
@@ -551,14 +585,16 @@ def shape(prepared: dict, decision: dict) -> dict:
         if not keys:
             continue
         cash_chain_keys.extend(keys)
-        amount = sum(float(rows[i].get("credit") or 0) for i in cash_i if 0 <= i < len(rows))
+        cash_total += sum(float(rows[i].get("credit") or 0) for i in cash_i if 0 <= i < len(rows))
+    if cash_chain_keys:
+        count = min(len(cash_chains), 12)
         notes.append(
             {
-                "code": f"judge-cash-{index}",
+                "code": "judge-cash-summary",
                 "title": "Cash deposits leave the account quickly",
-                "detail": _sentence(item.get("detail"), f"{_rupees(amount)} of cash is not treated as earned inflow."),
+                "detail": f"{count} cash deposits totaling {_rupees(cash_total)} leave as self or transfer within a few days and are not treated as earned inflow.",
                 "severity": "breach" if structural.get("opaqueCash") else "watch",
-                "keys": keys,
+                "keys": list(dict.fromkeys(cash_chain_keys))[:40],
             }
         )
 
@@ -588,7 +624,7 @@ def shape(prepared: dict, decision: dict) -> dict:
         notes.append(
             {
                 "code": "judge-bind",
-                "title": f"{binding} sizes the facility",
+                "title": f"{_month_label(binding)} sizes the facility",
                 "detail": _sentence(
                     decision.get("binding_detail"),
                     "Cash deposits and self-transfers are stripped before this month is used to size.",
@@ -614,17 +650,24 @@ def shape(prepared: dict, decision: dict) -> dict:
             }
         )
 
-    for index, party in enumerate(parties):
-        aliases = [alias for alias in party["aliases"] if alias and alias != party["name"]]
-        if not aliases:
-            continue
+    # Party merges stay on the parties object for grouping; do not flood the officer notes list.
+    merged_parties = [party for party in parties if len([a for a in party["aliases"] if a and a != party["name"]]) > 0]
+    if merged_parties:
+        sample = ", ".join(party["name"] for party in merged_parties[:3])
+        extra = len(merged_parties) - 3
+        detail = f"{len(merged_parties)} name groups were joined on this file"
+        if sample:
+            detail += f", including {sample}"
+            if extra > 0:
+                detail += f" and {extra} more"
+        detail += "."
         notes.append(
             {
-                "code": f"judge-party-{index}",
-                "title": f"{party['name']} is one payer",
-                "detail": "The statement spells this party as " + ", ".join([party["name"], *aliases]) + ".",
+                "code": "judge-party-summary",
+                "title": "Some payers appear under more than one spelling",
+                "detail": detail,
                 "severity": "info",
-                "keys": party["keys"],
+                "keys": [key for party in merged_parties[:5] for key in party["keys"][:4]],
             }
         )
 
@@ -791,6 +834,13 @@ def _sentence(primary, extra: str) -> str:
 
 def _rupees(value: float) -> str:
     return f"₹{value:,.0f}"
+
+
+def _month_label(key: str) -> str:
+    try:
+        return datetime.strptime(key, "%Y-%m").strftime("%b %y")
+    except ValueError:
+        return key
 
 
 def missing_months(keys: list[str]) -> list[str]:

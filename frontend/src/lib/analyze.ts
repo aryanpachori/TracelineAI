@@ -938,6 +938,8 @@ function buildReasons(
   const ids = (...categories: Category[]) => txns.filter((txn) => categories.includes(txn.category)).map((txn) => txn.id);
   const idByKey = new Map(txns.filter((txn) => txn.key).map((txn) => [txn.key as string, txn.id]));
   judgment?.notes.forEach((note) => {
+    // Skip legacy per-item judge spam; summaries replace the flood.
+    if (isLegacyJudgeNote(note.code)) return;
     reasons.push({
       code: note.code,
       title: note.title,
@@ -1185,8 +1187,52 @@ function buildReasons(
   pushSpendFlags(reasons, txns);
   pushHabitFlags(reasons, habits, policy);
 
-  const order: Record<Reason["severity"], number> = { breach: 0, watch: 1, good: 2, info: 3 };
-  return reasons.sort((a, b) => order[a.severity] - order[b.severity]);
+  return rankReasons(reasons);
+}
+
+const LEGACY_JUDGE_PREFIXES = ["judge-party-", "judge-people-", "judge-debt-", "judge-self-", "judge-cash-", "judge-loop-"] as const;
+
+function isLegacyJudgeNote(code: string): boolean {
+  if (code.endsWith("-summary") || code === "judge-bind") return false;
+  return LEGACY_JUDGE_PREFIXES.some((prefix) => code.startsWith(prefix));
+}
+
+/** Officer-facing order: blockers first, then watch, strengths, quiet detail last. */
+export function rankReasons(reasons: Reason[]): Reason[] {
+  const order = { breach: 0, watch: 1, good: 2, info: 3 };
+  const seen = new Set<string>();
+  const deduped: Reason[] = [];
+  for (const item of reasons) {
+    if (isLegacyJudgeNote(item.code)) continue;
+    const key = `${item.severity}|${item.title}`;
+    // Keep summaries; collapse duplicate titles from the same family.
+    if (seen.has(key) && !item.code.includes("summary")) continue;
+    seen.add(key);
+    deduped.push(item);
+  }
+  return deduped.sort((a, b) => order[a.severity] - order[b.severity] || a.title.localeCompare(b.title));
+}
+
+export type ReasonBucket = {
+  id: "blocks" | "watch" | "strengths" | "detail";
+  label: string;
+  hint: string;
+  items: Reason[];
+};
+
+export function bucketReasons(reasons: Reason[]): ReasonBucket[] {
+  const ranked = rankReasons(reasons);
+  const blocks = ranked.filter((item) => item.severity === "breach");
+  const watch = ranked.filter((item) => item.severity === "watch");
+  const strengths = ranked.filter((item) => item.severity === "good");
+  const detail = ranked.filter((item) => item.severity === "info");
+  const buckets: ReasonBucket[] = [
+    { id: "blocks", label: "Blocks the facility", hint: "Fix these before a new EMI", items: blocks },
+    { id: "watch", label: "Watch", hint: "Eligible only with these in view", items: watch },
+    { id: "strengths", label: "Strengths", hint: "What supports the file", items: strengths },
+    { id: "detail", label: "Detail", hint: "Spelling merges and quieter notes", items: detail },
+  ];
+  return buckets.filter((bucket) => bucket.items.length > 0);
 }
 
 function buildIntegrity(txns: Txn[], months: number, minMonths: number, missingMonths: string[] | null): IntegrityCheck[] {

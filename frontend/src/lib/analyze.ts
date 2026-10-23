@@ -1,5 +1,6 @@
 import { readCharacter } from "./character";
 import { categorize, counterparty } from "./categorize";
+import { buildCreditSignals, creditSignalReasons, LOAN_APP } from "./credit-signals";
 import { buildFlows } from "./flows";
 import { buildGroups, groupOf } from "./groups";
 import { datasetRate, inr, monthKey, monthLabel, prettyDate, yearsLabel } from "./format";
@@ -100,12 +101,26 @@ export function analyze(
     cash.mode === "cashflow" ? { commitAlreadyInCash: true, receipt: (txn) => cash.workIds.has(txn.id) } : undefined,
   );
   const groups = buildGroups(txns, months);
-  const reasons = buildReasons(txns, months, metrics, policy, integrity, flows, payability, habits, judgment);
   const binding = judgment?.bindingMonth ? months.find((month) => month.key === judgment.bindingMonth) ?? null : null;
   const capacity = buildCapacity(metrics, policy, flows.extraCommit, habits, binding);
+  const creditSignals = buildCreditSignals({
+    txns,
+    months,
+    avgEarned: metrics.avgEarned,
+    monthlyDebt: metrics.obligationRatio * Math.max(metrics.avgEarned, 0),
+    proposedEmi: capacity.monthly,
+    policy,
+    flows,
+    debtIds: habits.burdenIds,
+  });
+  const graded = applyCreditHits(grade, creditSignals);
+  const reasons = rankReasons([
+    ...buildReasons(txns, months, metrics, policy, integrity, flows, payability, habits, judgment),
+    ...creditSignalReasons(creditSignals),
+  ]);
   const summary =
     cash.mode === "cashflow" || !reading?.summary
-      ? writeSummary(metrics, capacity, grade, policy, payability)
+      ? writeSummary(metrics, capacity, graded, policy, payability)
       : reading.summary;
   const capable = capacity.monthly > 0 && capacity.principal > 0;
   const character = readCharacter(months, groups, capable, {
@@ -117,6 +132,7 @@ export function analyze(
     backendMetrics,
     policyMaxObligation: policy.maxObligationRatio,
     reasons,
+    creditSignals,
   });
 
   return {
@@ -130,7 +146,7 @@ export function analyze(
     metrics,
     capacity,
     payability,
-    grade,
+    grade: graded,
     reasons,
     integrity,
     counterparties,
@@ -141,6 +157,7 @@ export function analyze(
     flows,
     groups,
     character,
+    creditSignals,
     backendMetrics: backendMetrics ?? null,
   };
 }
@@ -520,7 +537,7 @@ function dayStamp(iso: string) {
 const BASIC_GROUPS = new Set(["rent", "food", "fuel", "utilities", "tax", "healthcare", "insurance", "suppliers"]);
 const LIFESTYLE_GROUPS = new Set(["shopping", "travel", "subscriptions", "cards"]);
 const UNCOVERED_GROUPS = new Set(["shopping", "travel", "cards"]);
-const LENDER = /bajaj|bflautopay|\bbfl\b|kreditbee|\bnavi\b|\bslice\b|lazypay|\bsimpl\b|home\s*credit|moneyview|earlysalary|postpe/i;
+const LENDER = LOAN_APP;
 const SKIP_PAYER = new Set(["unknown", "interest", "cash deposit", "atm"]);
 
 type SpendHabits = {
@@ -1187,7 +1204,88 @@ function buildReasons(
   pushSpendFlags(reasons, txns);
   pushHabitFlags(reasons, habits, policy);
 
-  return rankReasons(reasons);
+  return reasons;
+}
+
+function applyCreditHits(
+  grade: Analysis["grade"],
+  signals: import("./types").CreditSignals,
+): Analysis["grade"] {
+  const rules = [...grade.rules];
+  const add = (id: string, label: string, hit: boolean, delta: number, note: string) => {
+    if (!hit) return;
+    rules.push({ id, label, hit: true, delta, note });
+  };
+  add(
+    "foir",
+    `FOIR within ${Math.round(signals.foirCap * 100)}% of earned inflow`,
+    signals.foirBreaks,
+    -18,
+    `${Math.round(signals.foirWithNew * 100)}% with a new EMI of ${inr(signals.proposedEmi, 0)}`,
+  );
+  add(
+    "emi-day-balance",
+    "Balance covers EMI on mandate dates",
+    signals.thinOnEmiDays,
+    -14,
+    `Median on the 1st/5th/15th/25th is ${inr(signals.balanceOnEmiDays, 0)}`,
+  );
+  if (!signals.thinOnEmiDays && signals.daysBelowEmi >= 4) {
+    rules.push({
+      id: "days-below-emi",
+      label: "Balance stays above existing EMI",
+      hit: true,
+      delta: -6,
+      note: `${signals.daysBelowEmi} days sit under ${inr(signals.monthlyDebt, 0)}`,
+    });
+  }
+  add(
+    "loan-stack",
+    "Loan-app stacking under control",
+    signals.stackCount >= 4 || signals.stackMonthly >= 15000,
+    -16,
+    `${signals.stackCount} apps, ~${inr(signals.stackMonthly, 0)} a month`,
+  );
+  if (signals.stackCount >= 3 && signals.stackCount < 4 && signals.stackMonthly < 15000) {
+    rules.push({
+      id: "loan-stack-watch",
+      label: "Loan-app stacking visible",
+      hit: true,
+      delta: -6,
+      note: `${signals.stackCount} digital lenders on the file`,
+    });
+  }
+  add(
+    "mandate-stress",
+    "EMI mandates clear without bounce",
+    signals.mandateBounced,
+    -12,
+    "At least one mandate return is on the file",
+  );
+  add(
+    "conduct",
+    "No material gambling or crypto outflow",
+    signals.conductShare >= 0.08 && signals.conductAmount >= 2000,
+    -20,
+    `${inr(signals.conductAmount, 0)} on betting or crypto narrations`,
+  );
+  if (signals.windowDressAmount >= 25000) {
+    rules.push({
+      id: "window-dress",
+      label: "Late credits look dressed",
+      hit: true,
+      delta: -8,
+      note: `${inr(signals.windowDressAmount, 0)} leaves again within days`,
+    });
+  }
+  const points = Math.max(0, Math.min(100, 100 + rules.reduce((sum, rule) => sum + rule.delta, 0)));
+  return {
+    ...grade,
+    points,
+    letter: letterFor(points),
+    label: labelFor(points),
+    rules,
+  };
 }
 
 const LEGACY_JUDGE_PREFIXES = ["judge-party-", "judge-people-", "judge-debt-", "judge-self-", "judge-cash-", "judge-loop-"] as const;

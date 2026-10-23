@@ -3,6 +3,7 @@ import type {
   BackendMetrics,
   Character,
   Conduct,
+  CreditSignals,
   EligibilityWhy,
   GroupReport,
   Judgment,
@@ -50,6 +51,7 @@ export function readCharacter(
     backendMetrics?: BackendMetrics | null;
     policyMaxObligation?: number;
     reasons?: Reason[];
+    creditSignals?: CreditSignals | null;
   },
 ): Character {
   const conduct = signals?.conduct;
@@ -73,17 +75,30 @@ export function readCharacter(
   else if (opaqueCash && tone === "contained") tone = "watch";
   else if (tone === "contained" && (bounces > 0 || (obligationRatio != null && obligationRatio >= 0.4))) tone = "watch";
 
+  const credit = signals?.creditSignals ?? null;
   const debtBreaks =
-    obligationRatio != null &&
-    signals?.policyMaxObligation != null &&
-    obligationRatio > signals.policyMaxObligation;
-  const notEligible = !capable || bounces > bounceCap || debtBreaks;
+    (obligationRatio != null &&
+      signals?.policyMaxObligation != null &&
+      obligationRatio > signals.policyMaxObligation) ||
+    Boolean(credit?.foirBreaks && credit.foir > credit.foirCap);
+  const stackBreaks = Boolean(credit && (credit.stackCount >= 4 || credit.stackMonthly >= 15000));
+  const conductBreaks = Boolean(credit && credit.conductShare >= 0.08 && credit.conductAmount >= 2000);
+  const mandateBreaks = Boolean(credit?.mandateBounced);
+  const notEligible =
+    !capable || bounces > bounceCap || debtBreaks || stackBreaks || conductBreaks || mandateBreaks;
+  if (!notEligible && credit) {
+    if (credit.thinOnEmiDays || credit.stackCount >= 3 || credit.windowDressAmount >= 25000) {
+      if (tone === "contained") tone = "watch";
+    }
+  }
   let verdictLabel: Character["verdictLabel"] = "Eligible";
   if (notEligible) verdictLabel = "Not eligible";
   else if (tone === "watch" || tone === "high") verdictLabel = "Eligible with watch";
 
   const riskLine = modelAgrees && tone === conduct.risk ? conduct.line : local.line;
+  const creditLine = creditWhy(credit, verdictLabel);
   const whyLine =
+    creditLine ||
     conduct?.line ||
     (verdictLabel === "Not eligible"
       ? riskLine
@@ -122,6 +137,7 @@ export function readCharacter(
     groupId: spend.groupId,
     reasons: signals?.reasons ?? [],
     judgment,
+    creditSignals: credit,
   });
 
   return {
@@ -143,9 +159,13 @@ export function readCharacter(
           : `${bounces} returns in six months, still inside the limit of ${bounceCap}.`,
     debtLoad: obligationRatio,
     debtLoadLine:
-      obligationRatio == null
-        ? null
-        : `Real debts (EMI, rent, cards) are ${Math.round(obligationRatio * 100)}% of what comes in.`,
+      credit
+        ? `FOIR is ${Math.round(credit.foir * 100)}% of earned inflow${
+            credit.proposedEmi > 0 ? `, ${Math.round(credit.foirWithNew * 100)}% with a new EMI` : ""
+          }.`
+        : obligationRatio == null
+          ? null
+          : `Real debts (EMI, rent, cards) are ${Math.round(obligationRatio * 100)}% of what comes in.`,
     archetype,
     archetypeLine: ARCHETYPE_LINE[archetype],
     cashStructureLine,
@@ -173,8 +193,10 @@ function buildEligibilityReasons(input: {
   groupId: string | null;
   reasons: Reason[];
   judgment?: Judgment | null;
+  creditSignals?: CreditSignals | null;
 }): EligibilityWhy[] {
   const rows: EligibilityWhy[] = [];
+  const credit = input.creditSignals ?? null;
   const shapeTitle =
     input.archetype === "salary" ? "Salaried account" : input.archetype === "trader" ? "Trader account" : "Mixed account";
   rows.push({
@@ -184,13 +206,52 @@ function buildEligibilityReasons(input: {
     detail: input.archetypeLine,
   });
 
-  if (input.obligationRatio != null) {
+  if (credit && credit.monthlyDebt > 0) {
+    rows.push({
+      id: "foir",
+      label: "FOIR",
+      title: credit.foirBreaks
+        ? `${Math.round(credit.foirWithNew * 100)}% with new EMI`
+        : `${Math.round(credit.foir * 100)}% of earned inflow`,
+      detail: credit.foirBreaks
+        ? `Fixed debts are ${Math.round(credit.foir * 100)}% now and ${Math.round(credit.foirWithNew * 100)}% after a new EMI of ${inrCompact(credit.proposedEmi)}. Cap is ${Math.round(credit.foirCap * 100)}%.`
+        : `EMI, rent, cards and digital lenders take ${Math.round(credit.foir * 100)}% of earned inflow (${inrCompact(credit.monthlyDebt)} a month). With a new EMI it would be ${Math.round(credit.foirWithNew * 100)}%.`,
+      open: { kind: "metric", id: "foir" },
+    });
+  } else if (input.obligationRatio != null) {
     rows.push({
       id: "debt",
       label: "Debt load",
       title: `${Math.round(input.obligationRatio * 100)}% of inflow`,
       detail: `Real debts (EMI, rent, cards) take ${Math.round(input.obligationRatio * 100)}% of what comes in. Self-transfers are not counted as EMI.`,
       open: input.groupId ? { kind: "group", id: "emi" } : undefined,
+    });
+  }
+
+  if (credit && (credit.thinOnEmiDays || credit.daysBelowEmi >= 4)) {
+    rows.push({
+      id: "abb",
+      label: "EMI-day balance",
+      title: credit.thinOnEmiDays
+        ? `${inrCompact(credit.balanceOnEmiDays)} on mandate dates`
+        : `${credit.daysBelowEmi} days below EMI`,
+      detail: credit.thinOnEmiDays
+        ? `Median balance on the 1st, 5th, 15th and 25th is ${inrCompact(credit.balanceOnEmiDays)}, under the ${inrCompact(credit.monthlyDebt)} already committed.`
+        : `${credit.daysBelowEmi} days sit under the existing EMI. Average bank balance is ${inrCompact(credit.abb)}.`,
+      open: { kind: "metric", id: "abb" },
+    });
+  }
+
+  if (credit && (credit.stackCount >= 2 || credit.stackMonthly >= 3000)) {
+    rows.push({
+      id: "stack",
+      label: "Loan apps",
+      title:
+        credit.stackCount >= 4 || credit.stackMonthly >= 15000
+          ? `${credit.stackCount} digital lenders`
+          : `${credit.stackCount} loan apps`,
+      detail: `${credit.stackNames.slice(0, 3).join(", ") || "Digital lenders"} take about ${inrCompact(credit.stackMonthly)} a month. These often sit outside bureau FOIR.`,
+      open: { kind: "metric", id: "stack" },
     });
   }
 
@@ -207,6 +268,26 @@ function buildEligibilityReasons(input: {
     });
   }
 
+  if (input.bounces > 0) {
+    rows.push({
+      id: "returns",
+      label: "Returns",
+      title: `${input.bounces} in 6 months`,
+      detail: input.returnsLine,
+      open: { kind: "metric", id: "bounces" },
+    });
+  }
+
+  if (credit && credit.windowDressAmount >= 25000) {
+    rows.push({
+      id: "dress",
+      label: "Window dressing",
+      title: `${inrCompact(credit.windowDressAmount)} reversed late`,
+      detail: "Large late credits leave again within a few days as self or transfer. They are not treated as earned inflow.",
+      open: { kind: "metric", id: "dress" },
+    });
+  }
+
   rows.push({
     id: "cashflow",
     label: "Cashflow",
@@ -219,25 +300,61 @@ function buildEligibilityReasons(input: {
         : undefined,
   });
 
-  rows.push({
-    id: "risk",
-    label: "Risk",
-    title: input.risk,
-    detail: input.riskLine,
-  });
+  if (rows.length < 5) {
+    rows.push({
+      id: "risk",
+      label: "Risk",
+      title: input.risk,
+      detail: input.riskLine,
+    });
+  }
 
-  // Prefer returns when they hurt eligibility; otherwise keep the capped list focused.
-  if (input.bounces > 0 || rows.length < 5) {
+  if (input.bounces <= 0 && rows.length < 5) {
     rows.push({
       id: "returns",
       label: "Returns",
-      title: input.bounces <= 0 ? "None" : `${input.bounces} in 6 months`,
+      title: "None",
       detail: input.returnsLine,
       open: { kind: "metric", id: "bounces" },
     });
   }
 
-  return rows.slice(0, 5);
+  return rows.slice(0, 6);
+}
+
+function creditWhy(
+  credit: CreditSignals | null,
+  verdict: Character["verdictLabel"],
+): string | null {
+  if (!credit) return null;
+  if (verdict === "Not eligible") {
+    if (credit.foirBreaks && credit.foir > credit.foirCap) {
+      return `Not eligible: FOIR is already ${Math.round(credit.foir * 100)}% of earned inflow, above the ${Math.round(credit.foirCap * 100)}% cap.`;
+    }
+    if (credit.stackCount >= 4 || credit.stackMonthly >= 15000) {
+      return `Not eligible: ${credit.stackCount} digital lenders already take about ${inrCompact(credit.stackMonthly)} a month.`;
+    }
+    if (credit.mandateBounced) {
+      return "Not eligible: an EMI mandate on this file has already returned.";
+    }
+    if (credit.conductShare >= 0.08 && credit.conductAmount >= 2000) {
+      return "Not eligible: gambling or crypto outflows sit on the file at a material share.";
+    }
+    return null;
+  }
+  if (credit.thinOnEmiDays) {
+    return `Eligible with watch: median balance on EMI dates is ${inrCompact(credit.balanceOnEmiDays)}, under the ${inrCompact(credit.monthlyDebt)} already committed.`;
+  }
+  if (credit.stackCount >= 3) {
+    return `Eligible with watch: ${credit.stackCount} loan apps take about ${inrCompact(credit.stackMonthly)} a month outside bureau FOIR.`;
+  }
+  if (credit.windowDressAmount >= 25000) {
+    return `Eligible with watch: ${inrCompact(credit.windowDressAmount)} in late credits leave again within days.`;
+  }
+  if (credit.foirBreaks) {
+    return `Eligible with watch: FOIR would be ${Math.round(credit.foirWithNew * 100)}% after a new EMI, above the ${Math.round(credit.foirCap * 100)}% cap.`;
+  }
+  return null;
 }
 
 function spender(groups: GroupReport) {

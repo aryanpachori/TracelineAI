@@ -61,6 +61,8 @@ const BRANDS: [RegExp, string][] = [
   [/irctc/, "IRCTC"],
   [/zerodha/, "Zerodha"],
   [/\bcred\b/, "CRED"],
+  [/\bsimpl\b/, "Simpl"],
+  [/lazypay/, "LazyPay"],
   [/airtel/, "Airtel"],
   [/uber/, "Uber"],
   [/\bola\b/, "Ola"],

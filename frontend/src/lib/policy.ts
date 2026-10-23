@@ -13,6 +13,42 @@ export const STANDARD_POLICY: Policy = {
 
 export const POLICY_PRESETS: { id: string; label: string; hint: string; policy: Policy }[] = [
   {
+    id: "micro",
+    label: "Micro (3 months)",
+    hint: "Short vintage, tighter FOIR, small unsecured ticket",
+    policy: {
+      maxObligationRatio: 0.35,
+      maxBounces6m: 0,
+      minMonths: 3,
+      maxConcentration: 0.55,
+      surplusShare: 0.25,
+      annualRate: 0.32,
+      tenureMonths: 6,
+      minAvgInflow: 40000,
+    },
+  },
+  {
+    id: "personal",
+    label: "Personal loan (6 months)",
+    hint: "Salaried or mixed file, standard FOIR and bounce cap",
+    policy: STANDARD_POLICY,
+  },
+  {
+    id: "msme",
+    label: "MSME (12 months)",
+    hint: "Trader file, longer vintage, FOIR on earned receipts",
+    policy: {
+      maxObligationRatio: 0.5,
+      maxBounces6m: 1,
+      minMonths: 12,
+      maxConcentration: 0.65,
+      surplusShare: 0.35,
+      annualRate: 0.22,
+      tenureMonths: 24,
+      minAvgInflow: 100000,
+    },
+  },
+  {
     id: "conservative",
     label: "Conservative",
     hint: "Tighter bounces, shorter tenure, smaller share of surplus",
@@ -25,27 +61,6 @@ export const POLICY_PRESETS: { id: string; label: string; hint: string; policy: 
       annualRate: 0.28,
       tenureMonths: 12,
       minAvgInflow: 150000,
-    },
-  },
-  {
-    id: "standard",
-    label: "Standard",
-    hint: "Small-ticket unsecured starting point",
-    policy: STANDARD_POLICY,
-  },
-  {
-    id: "growth",
-    label: "Growth",
-    hint: "Wider band for a cleaner recent trend",
-    policy: {
-      maxObligationRatio: 0.55,
-      maxBounces6m: 3,
-      minMonths: 6,
-      maxConcentration: 0.7,
-      surplusShare: 0.45,
-      annualRate: 0.21,
-      tenureMonths: 24,
-      minAvgInflow: 80000,
     },
   },
 ];

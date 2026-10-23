@@ -341,6 +341,7 @@ function Verdict({ analysis }: { analysis: Analysis }) {
           {inr(capacity.monthly, 0)} a month is free for a new EMI on this read.
         </p>
       ) : null}
+      <CreditStrip analysis={analysis} />
       <dl className="mt-8 grid max-w-[34rem] grid-cols-3 gap-4 border-t border-rule pt-5">
         <div>
           <dt className="text-sm text-muted">{cashflow ? "Comes in" : "Earns"}</dt>
@@ -387,6 +388,70 @@ function Verdict({ analysis }: { analysis: Analysis }) {
         })}
       </ul>
     </div>
+  );
+}
+
+function CreditStrip({ analysis }: { analysis: Analysis }) {
+  const { open, setOpen } = useOpen();
+  const signals = analysis.creditSignals;
+  const items = [
+    {
+      id: "foir",
+      label: "FOIR",
+      value: `${Math.round(signals.foir * 100)}%`,
+      note:
+        signals.proposedEmi > 0
+          ? `→ ${Math.round(signals.foirWithNew * 100)}% with new EMI`
+          : `cap ${Math.round(signals.foirCap * 100)}%`,
+      how: "Fixed obligations (EMI, rent, cards, digital lenders) divided by earned inflow. The second figure adds the proposed EMI.",
+      tone: signals.foirBreaks || signals.foir > signals.foirCap ? "text-rust" : signals.foir >= signals.foirCap * 0.75 ? "text-brass" : "",
+    },
+    {
+      id: "abb",
+      label: "On EMI days",
+      value: signals.balanceOnEmiDays ? inrCompact(signals.balanceOnEmiDays) : "—",
+      note: signals.thinOnEmiDays
+        ? "below existing EMI"
+        : signals.abb
+          ? `ABB ${inrCompact(signals.abb)}`
+          : "No daily balances",
+      how: "Median end-of-day balance on the 1st, 5th, 15th and 25th — typical NACH presentation dates. ABB is the average daily balance.",
+      tone: signals.thinOnEmiDays ? "text-rust" : signals.daysBelowEmi >= 4 ? "text-brass" : "",
+    },
+    {
+      id: "stack",
+      label: "Loan apps",
+      value: signals.stackCount ? String(signals.stackCount) : "None",
+      note: signals.stackCount ? `${inrCompact(signals.stackMonthly)} a month` : "No digital lenders",
+      how: "Recurring debits to digital lenders and pay-later apps. These often sit outside bureau FOIR until late.",
+      tone:
+        signals.stackCount >= 4 || signals.stackMonthly >= 15000
+          ? "text-rust"
+          : signals.stackCount >= 3 || signals.stackMonthly >= 5000
+            ? "text-brass"
+            : "",
+    },
+  ];
+  return (
+    <dl className="mt-6 grid max-w-[34rem] grid-cols-3 gap-3">
+      {items.map((item) => {
+        const picked = openMatch(open, { kind: "metric", id: item.id });
+        return (
+          <div key={item.id} className={picked ? "picked px-1" : ""}>
+            <dt className="flex flex-wrap items-center text-sm text-muted">
+              <button type="button" className="text-left" onClick={() => setOpen({ kind: "metric", id: item.id })}>
+                {item.label}
+              </button>
+              <InfoTip text={item.how} />
+            </dt>
+            <button type="button" className="mt-1 block w-full text-left" onClick={() => setOpen({ kind: "metric", id: item.id })}>
+              <dd className={`num font-serif text-2xl leading-none ${item.tone}`}>{item.value}</dd>
+              <dd className="mt-1 text-xs text-muted">{item.note}</dd>
+            </button>
+          </div>
+        );
+      })}
+    </dl>
   );
 }
 
@@ -621,11 +686,32 @@ function Averages({ analysis }: { analysis: Analysis }) {
     { id: "bounces", label: "Returns, 6 months", value: String(m.bounces6m), note: `charges ${inr(m.bounceCharges, 0)}`, how: "Returned cheques in the last 6 months. The charge line is the bank fee on those returns." },
     { id: "volatility", label: "Volatility", value: m.volatility.toFixed(2), note: `recent quarter ${signedPct(m.trend)}`, how: "How far each month's earned inflow sits from the average. The recent quarter compares the last 3 months with the 3 before." },
     { id: "concentration", label: "Largest payer", value: pct(m.topShare), note: m.topName, how: cashflow ? "The largest source of cash from work, as a share of that cash." : "The largest source of business receipts, as a share of those receipts." },
+    {
+      id: "foir",
+      label: "FOIR",
+      value: pct(analysis.creditSignals.foir),
+      note: analysis.creditSignals.proposedEmi > 0 ? `with new EMI ${pct(analysis.creditSignals.foirWithNew)}` : `cap ${pct(analysis.creditSignals.foirCap)}`,
+      how: "Fixed obligations (EMI, rent, cards, digital lenders) divided by earned inflow.",
+    },
+    {
+      id: "abb",
+      label: "On EMI days",
+      value: analysis.creditSignals.balanceOnEmiDays ? inrCompact(analysis.creditSignals.balanceOnEmiDays) : "—",
+      note: `ABB ${inrCompact(analysis.creditSignals.abb)}`,
+      how: "Median end-of-day balance on typical NACH dates (1st, 5th, 15th, 25th).",
+    },
+    {
+      id: "stack",
+      label: "Loan apps",
+      value: analysis.creditSignals.stackCount ? String(analysis.creditSignals.stackCount) : "None",
+      note: analysis.creditSignals.stackCount ? `${inrCompact(analysis.creditSignals.stackMonthly)} a month` : "No digital lenders",
+      how: "Recurring debits to digital lenders and pay-later apps, often outside bureau FOIR.",
+    },
   ];
   return (
     <div>
       <SectionTitle title="Averages" aside={<span className="text-sm text-muted">Open any figure</span>} />
-      <dl className="grid grid-cols-2 border-b border-rule md:grid-cols-3 xl:grid-cols-6">
+      <dl className="grid grid-cols-2 border-b border-rule md:grid-cols-3">
         {items.map((item) => (
           <div key={item.id} className={`border-t border-rule py-3 pr-4 ${openMatch(open, { kind: "metric", id: item.id }) ? "picked px-2" : ""}`}>
             <div className="flex flex-wrap items-center">

@@ -511,6 +511,82 @@ function metricView(analysis: Analysis, id: string): View {
       txnIds: byCategory(["business_in", "salary", "emi", "rent", "supplier", "utilities", "tax", "bounce_charge", "bounce_reversal"]),
     };
   }
+  if (id === "foir") {
+    const signals = analysis.creditSignals;
+    return {
+      title: "FOIR",
+      reading: `Fixed obligations are ${pct(signals.foir)} of earned inflow, ${inr(signals.monthlyDebt, 0)} a month.${
+        signals.hiddenStack > 0 ? ` ${inr(signals.hiddenStack, 0)} of that is digital lenders not booked as EMI.` : ""
+      } A new EMI of ${inr(signals.proposedEmi, 0)} would take FOIR to ${pct(signals.foirWithNew)}. The file cap is ${pct(signals.foirCap)}.`,
+      facts: [
+        { label: "FOIR now", value: pct(signals.foir) },
+        { label: "With new EMI", value: pct(signals.foirWithNew) },
+        { label: "Monthly debts", value: inr(signals.monthlyDebt, 0) },
+        { label: "Policy cap", value: pct(signals.foirCap) },
+      ],
+      txnIds: signals.debtIds,
+    };
+  }
+  if (id === "abb") {
+    const signals = analysis.creditSignals;
+    return {
+      title: "Balance on EMI days",
+      reading: `Median end-of-day on the 1st, 5th, 15th and 25th is ${inr(signals.balanceOnEmiDays, 0)}. Average bank balance across every day is ${inr(signals.abb, 0)}. ${
+        signals.thinOnEmiDays
+          ? "That EMI-day figure sits under the instalments already committed, so a mandate can return even when the month average looks fine."
+          : `${signals.daysBelowEmi} days sit under the existing EMI.`
+      }`,
+      facts: [
+        { label: "On EMI days", value: inr(signals.balanceOnEmiDays, 0) },
+        { label: "ABB", value: inr(signals.abb, 0) },
+        { label: "Days below EMI", value: String(signals.daysBelowEmi) },
+        { label: "Near-zero days", value: String(signals.zeroBalanceDays) },
+      ],
+      txnIds: signals.debtIds,
+    };
+  }
+  if (id === "stack") {
+    const signals = analysis.creditSignals;
+    return {
+      title: "Loan-app stack",
+      reading: signals.stackCount
+        ? `${signals.stackCount} digital lenders take about ${inr(signals.stackMonthly, 0)} a month${
+            signals.stackNames.length ? ` — ${signals.stackNames.slice(0, 4).join(", ")}` : ""
+          }. These often sit outside bureau FOIR until late.`
+        : "No digital-lender or pay-later debits were found on this file.",
+      facts: [
+        { label: "Lenders", value: String(signals.stackCount) },
+        { label: "A month", value: inr(signals.stackMonthly, 0) },
+        { label: "Hidden in FOIR", value: inr(signals.hiddenStack, 0) },
+      ],
+      txnIds: signals.stackIds,
+    };
+  }
+  if (id === "dress") {
+    const signals = analysis.creditSignals;
+    return {
+      title: "Window dressing",
+      reading: signals.windowDressAmount
+        ? `${inr(signals.windowDressAmount, 0)} in large credits near the end of the file leave again within a few days as self or transfer. They are not treated as earned inflow.`
+        : "No late credits reverse out as self or transfer in the trailing 30 days.",
+      facts: [{ label: "Reversed late", value: inr(signals.windowDressAmount, 0) }],
+      txnIds: signals.windowDressIds,
+    };
+  }
+  if (id === "conduct") {
+    const signals = analysis.creditSignals;
+    return {
+      title: "Conduct risk",
+      reading: signals.conductAmount
+        ? `${inr(signals.conductAmount, 0)} (${pct(signals.conductShare)} of outflow) matches betting or crypto narrations.`
+        : "No gambling or crypto narrations were found.",
+      facts: [
+        { label: "Amount", value: inr(signals.conductAmount, 0) },
+        { label: "Share of outflow", value: pct(signals.conductShare) },
+      ],
+      txnIds: signals.conductIds,
+    };
+  }
   if (id === "obligations" || id === "emi" || id === "rent") {
     const ids = id === "emi" ? ["emi"] : id === "rent" ? ["rent"] : ["emi", "rent"];
     return {

@@ -89,6 +89,7 @@ export type Reason = {
   txnIds: string[];
 };
 
+
 export type JudgmentNote = {
   code: string;
   title: string;
@@ -136,6 +137,35 @@ export type BackendMetrics = {
   cashInShare?: number;
   archetype?: "salary" | "trader" | "mixed";
   opaqueCash?: boolean;
+};
+
+/** NBFC-style BSA signals: FOIR, ABB, EMI-day balances, loan-app stack, window dress, conduct. */
+export type CreditSignals = {
+  foir: number;
+  foirWithNew: number;
+  foirCap: number;
+  foirBreaks: boolean;
+  monthlyDebt: number;
+  hiddenStack: number;
+  proposedEmi: number;
+  abb: number;
+  balanceOnEmiDays: number;
+  thinOnEmiDays: boolean;
+  daysBelowEmi: number;
+  zeroBalanceDays: number;
+  stackCount: number;
+  stackMonthly: number;
+  stackNames: string[];
+  stackIds: string[];
+  windowDressAmount: number;
+  windowDressIds: string[];
+  conductShare: number;
+  conductAmount: number;
+  conductIds: string[];
+  mandateCount: number;
+  mandateMissed: number;
+  mandateBounced: boolean;
+  debtIds: string[];
 };
 
 export type EligibilityWhy = {
@@ -250,6 +280,7 @@ export type Analysis = {
   flows: FlowReport;
   groups: GroupReport;
   character: Character;
+  creditSignals: CreditSignals;
   backendMetrics?: BackendMetrics | null;
 };
 
